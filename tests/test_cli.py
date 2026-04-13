@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,29 @@ if str(SRC_DIR) not in sys.path:
 from block_detect import cli  # noqa: E402
 from block_detect.classifier import BlackPixelClassifier  # noqa: E402
 from block_detect.config import load_settings, ensure_workspace_dirs  # noqa: E402
+from block_detect.pipeline import DetectionPipeline  # noqa: E402
+
+
+class FakeDropboxClient:
+    def __init__(self, file_map: dict[str, Path]):
+        self.file_map = file_map
+        self.listed_paths: list[str] = []
+        self.downloaded_paths: list[str] = []
+
+    def list_day_images(self, remote_day_path: str) -> list[str]:
+        self.listed_paths.append(remote_day_path)
+        return sorted(self.file_map)
+
+    def download_images(self, remote_paths: list[str], target_dir: Path) -> list[Path]:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        downloaded: list[Path] = []
+        for remote_path in remote_paths:
+            self.downloaded_paths.append(remote_path)
+            source = self.file_map[remote_path]
+            target = target_dir / source.name
+            shutil.copy2(source, target)
+            downloaded.append(target)
+        return downloaded
 
 
 class CliTest(unittest.TestCase):
@@ -75,6 +99,28 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(result.label, "normal")
         self.assertGreaterEqual(result.score, 0.0)
+
+    def test_pipeline_runs_day_batch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = load_settings(workspace)
+            ensure_workspace_dirs(settings)
+            file_map = {
+                f"/captures/2026-04-13/{path.name}": path
+                for path in sorted(PROJECT_ROOT.glob("tests/*.jpg"))
+            }
+            pipeline = DetectionPipeline(
+                settings=settings,
+                classifier=BlackPixelClassifier(),
+                dropbox_client=FakeDropboxClient(file_map),
+            )
+
+            summary = pipeline.run_day("2026-04-13", remote_day_path="/captures/2026-04-13")
+
+        self.assertEqual(summary.processed_count, 6)
+        self.assertEqual(summary.abnormal_count, 5)
+        self.assertEqual(summary.normal_count, 1)
+        self.assertEqual(summary.unknown_count, 0)
 
 
 if __name__ == "__main__":
