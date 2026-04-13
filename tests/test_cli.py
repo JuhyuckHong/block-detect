@@ -16,6 +16,7 @@ if str(SRC_DIR) not in sys.path:
 from block_detect import cli  # noqa: E402
 from block_detect.classifier import BlackPixelClassifier  # noqa: E402
 from block_detect.config import load_settings, ensure_workspace_dirs  # noqa: E402
+from block_detect.dropbox_client import load_dropbox_credentials, DropboxClient  # noqa: E402
 from block_detect.pipeline import DetectionPipeline, PipelineSummary  # noqa: E402
 
 
@@ -154,6 +155,39 @@ class CliTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(fake_pipeline.run_calls, [("2026-04-13", None)])
         self.assertIn("processed=6", stdout.getvalue())
+
+    def test_dropbox_client_prefers_refresh_token_flow_when_both_exist(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            original_env = {
+                "DROPBOX_APP_KEY": os.environ.get("DROPBOX_APP_KEY"),
+                "DROPBOX_APP_SECRET": os.environ.get("DROPBOX_APP_SECRET"),
+                "DROPBOX_REFRESH_TOKEN": os.environ.get("DROPBOX_REFRESH_TOKEN"),
+                "DROPBOX_ACCESS_TOKEN": os.environ.get("DROPBOX_ACCESS_TOKEN"),
+            }
+            os.environ["DROPBOX_APP_KEY"] = "app-key"
+            os.environ["DROPBOX_APP_SECRET"] = "app-secret"
+            os.environ["DROPBOX_REFRESH_TOKEN"] = "refresh-token"
+            os.environ["DROPBOX_ACCESS_TOKEN"] = "expired-access-token"
+            try:
+                settings = load_settings(workspace)
+            finally:
+                for key, value in original_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        client = DropboxClient(settings)
+
+        with mock.patch("block_detect.dropbox_client.dropbox.Dropbox") as patched_dropbox:
+            client.get_client()
+
+        _, kwargs = patched_dropbox.call_args
+        self.assertEqual(kwargs["app_key"], "app-key")
+        self.assertEqual(kwargs["app_secret"], "app-secret")
+        self.assertEqual(kwargs["oauth2_refresh_token"], "refresh-token")
+        self.assertNotIn("oauth2_access_token", kwargs)
 
 
 if __name__ == "__main__":

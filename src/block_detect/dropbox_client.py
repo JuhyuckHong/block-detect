@@ -66,16 +66,16 @@ class DropboxClient:
         if self._client is not None:
             return self._client
 
-        if self.credentials.access_token:
-            self._client = dropbox.Dropbox(oauth2_access_token=self.credentials.access_token)
-            return self._client
-
         if self.credentials.app_key and self.credentials.app_secret and self.credentials.refresh_token:
             self._client = dropbox.Dropbox(
                 app_key=self.credentials.app_key,
                 app_secret=self.credentials.app_secret,
                 oauth2_refresh_token=self.credentials.refresh_token,
             )
+            return self._client
+
+        if self.credentials.access_token:
+            self._client = dropbox.Dropbox(oauth2_access_token=self.credentials.access_token)
             return self._client
 
         raise RuntimeError("Dropbox credentials are not configured.")
