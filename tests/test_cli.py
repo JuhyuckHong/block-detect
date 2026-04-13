@@ -1,9 +1,12 @@
+import io
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -13,7 +16,7 @@ if str(SRC_DIR) not in sys.path:
 from block_detect import cli  # noqa: E402
 from block_detect.classifier import BlackPixelClassifier  # noqa: E402
 from block_detect.config import load_settings, ensure_workspace_dirs  # noqa: E402
-from block_detect.pipeline import DetectionPipeline  # noqa: E402
+from block_detect.pipeline import DetectionPipeline, PipelineSummary  # noqa: E402
 
 
 class FakeDropboxClient:
@@ -36,6 +39,24 @@ class FakeDropboxClient:
             shutil.copy2(source, target)
             downloaded.append(target)
         return downloaded
+
+
+class FakePipeline:
+    def __init__(self):
+        self.prepare_called = False
+        self.run_calls: list[tuple[str, str | None]] = []
+
+    def prepare(self) -> None:
+        self.prepare_called = True
+
+    def run_day(self, day: str, remote_day_path: str | None = None) -> PipelineSummary:
+        self.run_calls.append((day, remote_day_path))
+        return PipelineSummary(
+            processed_count=6,
+            abnormal_count=5,
+            normal_count=1,
+            unknown_count=0,
+        )
 
 
 class CliTest(unittest.TestCase):
@@ -121,6 +142,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual(summary.abnormal_count, 5)
         self.assertEqual(summary.normal_count, 1)
         self.assertEqual(summary.unknown_count, 0)
+
+    def test_main_runs_batch_for_date(self):
+        fake_pipeline = FakePipeline()
+        stdout = io.StringIO()
+
+        with mock.patch("block_detect.cli.build_pipeline", return_value=fake_pipeline):
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["--date", "2026-04-13"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fake_pipeline.run_calls, [("2026-04-13", None)])
+        self.assertIn("processed=6", stdout.getvalue())
 
 
 if __name__ == "__main__":
