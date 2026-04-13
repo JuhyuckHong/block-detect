@@ -19,6 +19,10 @@ class Settings:
     dropbox_refresh_token: str
     dropbox_access_token: str
     dropbox_account_info_file: str
+    dropbox_day_template: str
+    dark_threshold: int
+    dark_ratio_threshold: float
+    mean_brightness_threshold: float
 
 
 def load_settings(workspace_dir: Path | None = None) -> Settings:
@@ -37,6 +41,12 @@ def load_settings(workspace_dir: Path | None = None) -> Settings:
         dropbox_refresh_token=os.getenv("DROPBOX_REFRESH_TOKEN", "").strip(),
         dropbox_access_token=os.getenv("DROPBOX_ACCESS_TOKEN", "").strip(),
         dropbox_account_info_file=os.getenv("DROPBOX_ACCOUNT_INFO_FILE", "").strip(),
+        dropbox_day_template=os.getenv("BLOCK_DETECT_DROPBOX_DAY_TEMPLATE", "{date}").strip(),
+        dark_threshold=int(os.getenv("BLOCK_DETECT_DARK_THRESHOLD", "32")),
+        dark_ratio_threshold=float(os.getenv("BLOCK_DETECT_DARK_RATIO_THRESHOLD", "0.58")),
+        mean_brightness_threshold=float(
+            os.getenv("BLOCK_DETECT_MEAN_BRIGHTNESS_THRESHOLD", "50.0")
+        ),
     )
 
 
@@ -50,4 +60,3 @@ def ensure_workspace_dirs(settings: Settings) -> None:
         settings.workspace_dir / "secrets",
     ):
         path.mkdir(parents=True, exist_ok=True)
-

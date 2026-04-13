@@ -30,6 +30,33 @@ class CliTest(unittest.TestCase):
         args = parser.parse_args(["--prepare-only"])
         self.assertTrue(args.prepare_only)
 
+    def test_load_settings_exposes_detection_thresholds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            original_dropbox_root = os.environ.get("BLOCK_DETECT_DROPBOX_ROOT")
+            original_day_template = os.environ.get("BLOCK_DETECT_DROPBOX_DAY_TEMPLATE")
+            os.environ["BLOCK_DETECT_DROPBOX_ROOT"] = "/captures"
+            os.environ["BLOCK_DETECT_DROPBOX_DAY_TEMPLATE"] = "{date}/camera-a"
+            try:
+                settings = load_settings(workspace)
+            finally:
+                if original_dropbox_root is None:
+                    os.environ.pop("BLOCK_DETECT_DROPBOX_ROOT", None)
+                else:
+                    os.environ["BLOCK_DETECT_DROPBOX_ROOT"] = original_dropbox_root
+
+                if original_day_template is None:
+                    os.environ.pop("BLOCK_DETECT_DROPBOX_DAY_TEMPLATE", None)
+                else:
+                    os.environ["BLOCK_DETECT_DROPBOX_DAY_TEMPLATE"] = original_day_template
+
+        self.assertEqual(settings.dropbox_root, "/captures")
+        self.assertEqual(settings.dropbox_day_template, "{date}/camera-a")
+        self.assertEqual(settings.dark_threshold, 32)
+        self.assertEqual(settings.dark_ratio_threshold, 0.58)
+        self.assertEqual(settings.mean_brightness_threshold, 50.0)
+
     def test_classifier_marks_ab_samples_abnormal(self):
         classifier = BlackPixelClassifier()
         sample_paths = sorted(PROJECT_ROOT.glob("tests/ab-*.jpg"))
