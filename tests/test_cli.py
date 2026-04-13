@@ -10,7 +10,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from block_detect import cli  # noqa: E402
-from block_detect.classifier import PlaceholderClassifier  # noqa: E402
+from block_detect.classifier import BlackPixelClassifier  # noqa: E402
 from block_detect.config import load_settings, ensure_workspace_dirs  # noqa: E402
 
 
@@ -31,7 +31,7 @@ class CliTest(unittest.TestCase):
         self.assertTrue(args.prepare_only)
 
     def test_classifier_marks_ab_samples_abnormal(self):
-        classifier = PlaceholderClassifier()
+        classifier = BlackPixelClassifier()
         sample_paths = sorted(PROJECT_ROOT.glob("tests/ab-*.jpg"))
 
         self.assertTrue(sample_paths)
@@ -42,7 +42,7 @@ class CliTest(unittest.TestCase):
             self.assertGreater(result.score, 0.0, sample_path.name)
 
     def test_classifier_marks_normal_sample_normal(self):
-        classifier = PlaceholderClassifier()
+        classifier = BlackPixelClassifier()
 
         result = classifier.classify(PROJECT_ROOT / "tests/normal.jpg")
 
