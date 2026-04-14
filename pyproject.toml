@@ -12,6 +12,10 @@ dependencies = [
   "Pillow>=12,<13",
 ]
 
+[project.scripts]
+block-detect = "block_detect.cli:main"
+block-detect-gui = "block_detect.gui:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

@@ -44,6 +44,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Maximum mean brightness for abnormal detection.",
     )
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        help="Number of concurrent Dropbox downloads.",
+    )
+    parser.add_argument(
+        "--classify-workers",
+        type=int,
+        help="Number of concurrent image classification workers.",
+    )
     return parser
 
 
@@ -63,6 +73,12 @@ def main(argv: list[str] | None = None) -> int:
         mean_brightness_threshold=args.mean_brightness_threshold
         if args.mean_brightness_threshold is not None
         else settings.mean_brightness_threshold,
+        download_workers=max(1, args.download_workers)
+        if args.download_workers is not None
+        else settings.download_workers,
+        classify_workers=max(1, args.classify_workers)
+        if args.classify_workers is not None
+        else settings.classify_workers,
     )
     pipeline = build_pipeline(settings=settings)
 
