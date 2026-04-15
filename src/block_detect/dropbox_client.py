@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import threading
+import time
 from typing import Callable
 
 import dropbox
@@ -65,6 +66,10 @@ def load_dropbox_credentials(settings: Settings) -> DropboxCredentials:
 class DropboxClient:
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
     HASH_BLOCK_SIZE = 4 * 1024 * 1024
+    DEFAULT_TIMEOUT_SECONDS = 300
+    DEFAULT_API_RETRIES = 6
+    DEFAULT_DOWNLOAD_RETRIES = 3
+    DEFAULT_RETRY_BACKOFF_SECONDS = 1.5
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -88,12 +93,18 @@ class DropboxClient:
                 app_key=self.credentials.app_key,
                 app_secret=self.credentials.app_secret,
                 oauth2_refresh_token=self.credentials.refresh_token,
+                max_retries_on_error=self.DEFAULT_API_RETRIES,
+                timeout=self.DEFAULT_TIMEOUT_SECONDS,
             )
             self._thread_local.client = client
             return client
 
         if self.credentials.access_token:
-            client = dropbox.Dropbox(oauth2_access_token=self.credentials.access_token)
+            client = dropbox.Dropbox(
+                oauth2_access_token=self.credentials.access_token,
+                max_retries_on_error=self.DEFAULT_API_RETRIES,
+                timeout=self.DEFAULT_TIMEOUT_SECONDS,
+            )
             self._thread_local.client = client
             return client
 
@@ -168,13 +179,46 @@ class DropboxClient:
 
         return True
 
+    def _is_retryable_error(self, error: Exception) -> bool:
+        message = str(error).lower()
+        transient_markers = (
+            "timed out",
+            "timeout",
+            "connection aborted",
+            "connection reset",
+            "temporarily unavailable",
+            "connection broken",
+            "remote end closed connection",
+            "ssl",
+        )
+        return isinstance(error, (TimeoutError, ConnectionError, OSError)) or any(
+            marker in message for marker in transient_markers
+        )
+
+    def _remove_partial_file(self, local_path: Path) -> None:
+        if local_path.exists():
+            local_path.unlink()
+
     def _download_image(self, remote_image: RemoteImageMetadata, target_dir: Path) -> Path:
         local_path = target_dir / remote_image.name
         if self._is_local_copy_current(local_path, remote_image):
             return local_path
-        self.get_client().files_download_to_file(str(local_path), remote_image.path_display)
-        self._preserve_remote_timestamp(local_path, remote_image)
-        return local_path
+
+        total_attempts = self.DEFAULT_DOWNLOAD_RETRIES + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                self.get_client().files_download_to_file(str(local_path), remote_image.path_display)
+                self._preserve_remote_timestamp(local_path, remote_image)
+                return local_path
+            except Exception as error:
+                self._remove_partial_file(local_path)
+                if not self._is_retryable_error(error) or attempt >= total_attempts:
+                    raise RuntimeError(
+                        f"Failed to download {remote_image.path_display} after {attempt} attempt(s): {error}"
+                    ) from error
+                time.sleep(self.DEFAULT_RETRY_BACKOFF_SECONDS * attempt)
+
+        raise RuntimeError(f"Failed to download {remote_image.path_display}.")
 
     def download_images(
         self,

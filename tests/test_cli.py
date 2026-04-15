@@ -35,6 +35,7 @@ from block_detect.dropbox_client import (  # noqa: E402
     load_dropbox_credentials,
 )
 from block_detect.gui import (  # noqa: E402
+    DetectionGui,
     apply_runtime_overrides,
     blocked_results,
     extract_capture_seconds,
@@ -137,6 +138,19 @@ class RecordingDownloader:
         shutil.copy2(self.file_map[remote_path], local_path)
         with self._lock:
             self.thread_ids.append(threading.get_ident())
+
+
+class FlakyDownloader:
+    def __init__(self, file_map: dict[str, Path], failures_before_success: int):
+        self.file_map = file_map
+        self.failures_before_success = failures_before_success
+        self.attempts = 0
+
+    def files_download_to_file(self, local_path: str, remote_path: str) -> None:
+        self.attempts += 1
+        if self.attempts <= self.failures_before_success:
+            raise TimeoutError("Read timed out.")
+        shutil.copy2(self.file_map[remote_path], local_path)
 
 
 class SequenceClassifier:
@@ -537,6 +551,29 @@ class CliTest(unittest.TestCase):
         self.assertEqual([path.name for path in downloaded], [remote_path.name for remote_path in remote_paths])
         self.assertGreater(len(set(downloader.thread_ids)), 1)
 
+    def test_dropbox_client_retries_transient_download_timeout(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = replace(load_settings(workspace), download_workers=1)
+            client = DropboxClient(settings)
+            target_dir = workspace / "downloads"
+            remote_image = RemoteImageMetadata(
+                path_display="/captures/2026-04-13/normal.jpg",
+                name="normal.jpg",
+            )
+            downloader = FlakyDownloader(
+                {remote_image.path_display: PROJECT_ROOT / "tests" / "normal.jpg"},
+                failures_before_success=2,
+            )
+
+            with mock.patch.object(client, "get_client", return_value=downloader):
+                with mock.patch("block_detect.dropbox_client.time.sleep"):
+                    downloaded = client.download_images([remote_image], target_dir)
+
+            self.assertEqual(downloader.attempts, 3)
+            self.assertEqual([path.name for path in downloaded], ["normal.jpg"])
+            self.assertTrue(downloaded[0].exists())
+
     def test_dropbox_client_lists_all_pages_from_dropbox(self):
         settings = load_settings(PROJECT_ROOT)
         client = DropboxClient(settings)
@@ -666,6 +703,26 @@ class CliTest(unittest.TestCase):
         )
         self.assertIsNone(extract_capture_seconds(Path("invalid-name.jpg")))
 
+    def test_gui_writes_error_log_file(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            gui = DetectionGui.__new__(DetectionGui)
+            gui.settings = load_settings(workspace)
+            gui.dropbox_path_var = mock.Mock()
+            gui.dropbox_path_var.get.return_value = "/captures/2026-04-13"
+
+            log_path = gui._write_error_log(
+                context="unit_test",
+                error_text="Traceback (most recent call last):\nRuntimeError: boom",
+            )
+
+            self.assertTrue(log_path.exists())
+            contents = log_path.read_text(encoding="utf-8")
+            self.assertIn("Context: unit_test", contents)
+            self.assertIn("Selected Day: 2026-04-13", contents)
+            self.assertIn("Dropbox Path: /captures/2026-04-13", contents)
+            self.assertIn("RuntimeError: boom", contents)
+
     def test_pipeline_summary_counts_blocked_alias_as_abnormal(self):
         settings = load_settings(PROJECT_ROOT)
         pipeline = DetectionPipeline(settings=settings, dropbox_client=FakeDropboxClient({}))
@@ -751,6 +808,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(kwargs["app_key"], "app-key")
         self.assertEqual(kwargs["app_secret"], "app-secret")
         self.assertEqual(kwargs["oauth2_refresh_token"], "refresh-token")
+        self.assertEqual(kwargs["max_retries_on_error"], DropboxClient.DEFAULT_API_RETRIES)
+        self.assertEqual(kwargs["timeout"], DropboxClient.DEFAULT_TIMEOUT_SECONDS)
         self.assertNotIn("oauth2_access_token", kwargs)
 
 

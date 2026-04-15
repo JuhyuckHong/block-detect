@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import hashlib
 import math
 from pathlib import Path
@@ -125,6 +126,7 @@ class DetectionGui:
         self.root.title("Block Detect")
         self.root.geometry("1380x900")
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.report_callback_exception = self._handle_tk_exception
 
         self.settings = load_settings()
         self.result_queue: Queue[tuple[str, object]] = Queue()
@@ -413,6 +415,52 @@ class DetectionGui:
             self.settings.inbox_dir / day,
         )
 
+    def _write_error_log(self, *, context: str, error_text: str) -> Path:
+        logs_dir = self.settings.workspace_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        log_path = logs_dir / f"block-detect-error-{timestamp}.log"
+        dropbox_path = self.dropbox_path_var.get().strip()
+        selected_day = self._selected_day()
+        payload = "\n".join(
+            [
+                f"Timestamp: {datetime.now().isoformat(timespec='seconds')}",
+                f"Context: {context}",
+                f"Selected Day: {selected_day or '-'}",
+                f"Dropbox Path: {dropbox_path or '-'}",
+                "",
+                error_text.strip(),
+                "",
+            ]
+        )
+        log_path.write_text(payload, encoding="utf-8")
+        return log_path
+
+    def _capture_error(self, *, context: str, error_text: str) -> dict[str, str]:
+        try:
+            log_path = self._write_error_log(context=context, error_text=error_text)
+        except Exception:
+            return {
+                "message": (
+                    f"{error_text.strip()}\n\n"
+                    "[error-log-write-failed]\n"
+                    f"{traceback.format_exc().strip()}"
+                )
+            }
+        return {
+            "message": error_text.strip(),
+            "log_path": str(log_path),
+        }
+
+    def _format_error_status(self, payload: object) -> str:
+        if isinstance(payload, dict):
+            message = str(payload.get("message", "")).strip()
+            log_path = str(payload.get("log_path", "")).strip()
+            if log_path:
+                return f"{message}\n\nSaved error log: {log_path}"
+            return message
+        return str(payload).strip()
+
     def _selected_day(self) -> str:
         path_value = self.dropbox_path_var.get().strip().strip("/")
         if not path_value:
@@ -460,7 +508,14 @@ class DetectionGui:
             self._update_action_button_state()
             return
         except Exception as exc:
-            self.status_var.set(f"Failed to load saved results: {exc}")
+            payload = self._capture_error(
+                context="load_existing",
+                error_text=traceback.format_exc(),
+            )
+            self.status_var.set(self._format_error_status(payload))
+            self.progress_label_var.set("Failed")
+            self.run_button.state(["!disabled"])
+            self._update_action_button_state()
             return
 
         self.status_var.set(f"Loaded saved results for {day}.")
@@ -543,7 +598,15 @@ class DetectionGui:
             )
             self.result_queue.put(("success", result))
         except Exception:
-            self.result_queue.put(("error", traceback.format_exc()))
+            self.result_queue.put(
+                (
+                    "error",
+                    self._capture_error(
+                        context="_run_detection_worker",
+                        error_text=traceback.format_exc(),
+                    ),
+                )
+            )
 
     def _run_local_reclassify_worker(
         self,
@@ -569,7 +632,30 @@ class DetectionGui:
             )
             self.result_queue.put(("success", result))
         except Exception:
-            self.result_queue.put(("error", traceback.format_exc()))
+            self.result_queue.put(
+                (
+                    "error",
+                    self._capture_error(
+                        context="_run_local_reclassify_worker",
+                        error_text=traceback.format_exc(),
+                    ),
+                )
+            )
+
+    def _handle_tk_exception(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: object,
+    ) -> None:
+        payload = self._capture_error(
+            context="tk_callback",
+            error_text="".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+        )
+        self.status_var.set(self._format_error_status(payload))
+        self.progress_label_var.set("Failed")
+        self.run_button.state(["!disabled"])
+        self._update_action_button_state()
 
     def _emit_progress(self, stage: str, current: int, total: int) -> None:
         self.result_queue.put(("progress", (stage, current, total)))
@@ -584,7 +670,7 @@ class DetectionGui:
                     stage, current, total = payload  # type: ignore[misc]
                     self._apply_progress(stage, current, total)
                 else:
-                    self.status_var.set(str(payload).strip())
+                    self.status_var.set(self._format_error_status(payload))
                     self.progress_label_var.set("Failed")
                     self.run_button.state(["!disabled"])
                     self._update_action_button_state()
