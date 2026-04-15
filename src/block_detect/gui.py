@@ -5,6 +5,7 @@ import hashlib
 import math
 from pathlib import Path
 from queue import Empty, Queue
+import re
 import threading
 import traceback
 import tkinter as tk
@@ -22,6 +23,7 @@ DEFAULT_GUI_DROPBOX_PATH = "/test_042_new/2026-03-30"
 THUMBNAIL_SIZE = (240, 180)
 SELECTED_PREVIEW_SIZE = (320, 240)
 GALLERY_BATCH_SIZE = 8
+TIME_PATTERN = re.compile(r"(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})$")
 
 
 def is_blocked_result(result: ClassificationResult) -> bool:
@@ -84,6 +86,20 @@ def thumbnail_cache_key(image_path: Path, size: tuple[int, int]) -> str:
         f"{image_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{size[0]}x{size[1]}".encode("utf-8")
     ).hexdigest()
     return digest
+
+
+def extract_capture_seconds(image_path: Path) -> int | None:
+    stem = image_path.stem
+    candidate = stem.split("_")[-1]
+    match = TIME_PATTERN.search(candidate)
+    if match is None:
+        return None
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute"))
+    second = int(match.group("second"))
+    if hour >= 24 or minute >= 60 or second >= 60:
+        return None
+    return hour * 3600 + minute * 60 + second
 
 
 def apply_runtime_overrides(
@@ -149,6 +165,18 @@ class DetectionGui:
         self.roi_line_offset_ratio_var.trace_add("write", self._on_visual_threshold_changed)
         self.root.after(100, self._poll_result_queue)
         self._update_action_button_state()
+
+    def _safe_score_threshold(self) -> float:
+        try:
+            return float(self.score_threshold_var.get())
+        except (tk.TclError, ValueError):
+            return float(self.settings.score_threshold)
+
+    def _safe_roi_line_offset_ratio(self) -> float:
+        try:
+            return float(self.roi_line_offset_ratio_var.get())
+        except (tk.TclError, ValueError):
+            return float(self.applied_roi_line_offset_ratio)
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -351,7 +379,7 @@ class DetectionGui:
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
             roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
-        except ValueError as exc:
+        except (ValueError, tk.TclError) as exc:
             self.status_var.set(str(exc))
             return
 
@@ -422,6 +450,7 @@ class DetectionGui:
 
         try:
             run_result = load_saved_run(day, settings=self.settings)
+            self._apply_saved_classification_settings(run_result.classification_settings)
             self._clear_results()
             self._apply_run_result(run_result)
         except KeyboardInterrupt:
@@ -437,6 +466,12 @@ class DetectionGui:
         self.status_var.set(f"Loaded saved results for {day}.")
         self._update_action_button_state()
 
+    def _apply_saved_classification_settings(self, classification_settings: dict[str, float]) -> None:
+        if "score_threshold" in classification_settings:
+            self.score_threshold_var.set(float(classification_settings["score_threshold"]))
+        if "roi_line_offset_ratio" in classification_settings:
+            self.roi_line_offset_ratio_var.set(float(classification_settings["roi_line_offset_ratio"]))
+
     def apply_threshold_to_local(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
             self.status_var.set("Detection is already running.")
@@ -449,7 +484,7 @@ class DetectionGui:
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
             roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
-        except ValueError as exc:
+        except (ValueError, tk.TclError) as exc:
             self.status_var.set(str(exc))
             return
 
@@ -577,7 +612,7 @@ class DetectionGui:
         self.progress_bar.configure(maximum=max(1, summary.processed_count), value=max(1, summary.processed_count))
         self.progress_label_var.set(f"Completed {summary.processed_count}/{summary.processed_count}")
         self.latest_results = run_result.results
-        self.applied_roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
+        self.applied_roi_line_offset_ratio = self._safe_roi_line_offset_ratio()
 
         self._populate_results_tree(run_result.results)
         self._populate_blocked_gallery(blocked)
@@ -783,7 +818,7 @@ class DetectionGui:
         right = width - 14
         bottom = height - 28
 
-        threshold = float(self.score_threshold_var.get())
+        threshold = self._safe_score_threshold()
 
         if not self.latest_results:
             canvas.create_rectangle(left, top, right, bottom, outline="#c9ced6")
@@ -833,7 +868,6 @@ class DetectionGui:
             canvas.create_line(left, y, right, y, fill="#e3e7ec", dash=(2, 4))
             canvas.create_text(left - 10, y, text=f"{grid_value:.1f}", anchor="e", fill="#55606f")
             grid_value += 0.1
-        canvas.create_text((left + right) / 2, height - 6, text="Image Order", anchor="s", fill="#55606f")
         canvas.create_text(14, (top + bottom) / 2, text="Score", angle=90, fill="#55606f")
 
         threshold_y = y_for(threshold)
@@ -847,13 +881,39 @@ class DetectionGui:
         )
 
         count = len(self.latest_results)
-        if count == 1:
+        capture_seconds = [extract_capture_seconds(result.image_path) for result in self.latest_results]
+        use_time_axis = all(value is not None for value in capture_seconds)
+        if use_time_axis:
+            time_values = [int(value) for value in capture_seconds if value is not None]
+            min_time = min(time_values)
+            max_time = max(time_values)
+            if min_time == max_time:
+                x_positions = [(left + right) / 2 for _ in time_values]
+            else:
+                x_positions = [
+                    left + ((value - min_time) / (max_time - min_time)) * (right - left)
+                    for value in time_values
+                ]
+
+            start_hour = min_time // 3600
+            end_hour = math.ceil(max_time / 3600)
+            for hour in range(start_hour, end_hour + 1):
+                tick_seconds = hour * 3600
+                if tick_seconds < min_time or tick_seconds > max_time:
+                    continue
+                x = left + ((tick_seconds - min_time) / (max_time - min_time)) * (right - left)
+                canvas.create_line(x, top, x, bottom, fill="#e3e7ec", dash=(2, 4))
+                canvas.create_text(x, height - 6, text=f"{hour:02d}:00", anchor="s", fill="#55606f")
+            canvas.create_text((left + right) / 2, height - 22, text="Time", anchor="s", fill="#55606f")
+        elif count == 1:
             x_positions = [(left + right) / 2]
+            canvas.create_text((left + right) / 2, height - 22, text="Image Order", anchor="s", fill="#55606f")
         else:
             x_positions = [
                 left + (index / (count - 1)) * (right - left)
                 for index in range(count)
             ]
+            canvas.create_text((left + right) / 2, height - 22, text="Image Order", anchor="s", fill="#55606f")
 
         for index, result in enumerate(self.latest_results):
             y = y_for(scores[index])
@@ -867,8 +927,9 @@ class DetectionGui:
                 outline="",
             )
 
-        canvas.create_text(left, height - 6, text="1", anchor="sw", fill="#55606f")
-        canvas.create_text(right, height - 6, text=str(count), anchor="se", fill="#55606f")
+        if not use_time_axis:
+            canvas.create_text(left, height - 6, text="1", anchor="sw", fill="#55606f")
+            canvas.create_text(right, height - 6, text=str(count), anchor="se", fill="#55606f")
 
     def _sync_blocked_scroll_region(self, _event: tk.Event) -> None:
         self.blocked_canvas.configure(scrollregion=self.blocked_canvas.bbox("all"))

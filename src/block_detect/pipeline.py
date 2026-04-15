@@ -26,6 +26,7 @@ class PipelineRunResult:
     results: list[ClassificationResult]
     summary: PipelineSummary
     report_path: Path
+    classification_settings: dict[str, float]
 
 
 ProgressCallback = Callable[[str, int, int], None]
@@ -152,6 +153,10 @@ class DetectionPipeline:
             results=results,
             summary=summary,
             report_path=report_path,
+            classification_settings={
+                "score_threshold": self.settings.score_threshold,
+                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+            },
         )
 
     def run_local_day_with_details(
@@ -172,6 +177,10 @@ class DetectionPipeline:
             results=results,
             summary=summary,
             report_path=report_path,
+            classification_settings={
+                "score_threshold": self.settings.score_threshold,
+                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+            },
         )
 
     def run_day(self, day: str, remote_day_path: str | None = None) -> PipelineSummary:
@@ -188,6 +197,10 @@ class DetectionPipeline:
         payload = {
             "day": day,
             "remote_day_path": remote_day_path,
+            "classification_settings": {
+                "score_threshold": self.settings.score_threshold,
+                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+            },
             "summary": {
                 "processed_count": summary.processed_count,
                 "abnormal_count": summary.abnormal_count,
@@ -231,6 +244,7 @@ def load_saved_run(day: str, settings: Settings | None = None) -> PipelineRunRes
     ]
 
     summary_payload = payload.get("summary", {})
+    classification_settings_payload = payload.get("classification_settings", {})
     summary = PipelineSummary(
         processed_count=int(summary_payload.get("processed_count", len(results))),
         abnormal_count=int(summary_payload.get("abnormal_count", 0)),
@@ -244,4 +258,18 @@ def load_saved_run(day: str, settings: Settings | None = None) -> PipelineRunRes
         results=results,
         summary=summary,
         report_path=report_path,
+        classification_settings={
+            "score_threshold": float(
+                classification_settings_payload.get(
+                    "score_threshold",
+                    resolved_settings.score_threshold,
+                )
+            ),
+            "roi_line_offset_ratio": float(
+                classification_settings_payload.get(
+                    "roi_line_offset_ratio",
+                    resolved_settings.roi_line_offset_ratio,
+                )
+            ),
+        },
     )

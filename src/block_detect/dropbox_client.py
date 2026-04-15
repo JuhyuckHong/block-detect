@@ -100,7 +100,12 @@ class DropboxClient:
         raise RuntimeError("Dropbox credentials are not configured.")
 
     def list_day_images(self, remote_day_path: str) -> list[RemoteImageMetadata]:
-        entries = self.get_client().files_list_folder(remote_day_path).entries
+        client = self.get_client()
+        response = client.files_list_folder(remote_day_path)
+        entries = list(response.entries)
+        while getattr(response, "has_more", False):
+            response = client.files_list_folder_continue(response.cursor)
+            entries.extend(response.entries)
         image_paths: list[RemoteImageMetadata] = []
         for entry in entries:
             path_display = getattr(entry, "path_display", None)

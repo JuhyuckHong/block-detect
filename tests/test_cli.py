@@ -37,6 +37,7 @@ from block_detect.dropbox_client import (  # noqa: E402
 from block_detect.gui import (  # noqa: E402
     apply_runtime_overrides,
     blocked_results,
+    extract_capture_seconds,
     format_ratio,
     render_preview_image,
     thumbnail_cache_key,
@@ -399,6 +400,11 @@ class CliTest(unittest.TestCase):
             self.assertEqual(run_result.remote_day_path, "/captures/2026-04-13")
             self.assertTrue(run_result.report_path.exists())
             self.assertEqual(len(run_result.results), 6)
+            self.assertEqual(run_result.classification_settings["score_threshold"], settings.score_threshold)
+            self.assertEqual(
+                run_result.classification_settings["roi_line_offset_ratio"],
+                settings.roi_line_offset_ratio,
+            )
 
     def test_pipeline_can_reclassify_existing_local_day_without_download(self):
         with workspace_tempdir() as tmpdir:
@@ -454,6 +460,14 @@ class CliTest(unittest.TestCase):
         self.assertEqual(loaded.day, saved.day)
         self.assertEqual(loaded.remote_day_path, saved.remote_day_path)
         self.assertEqual(loaded.summary.processed_count, saved.summary.processed_count)
+        self.assertEqual(
+            loaded.classification_settings["score_threshold"],
+            saved.classification_settings["score_threshold"],
+        )
+        self.assertEqual(
+            loaded.classification_settings["roi_line_offset_ratio"],
+            saved.classification_settings["roi_line_offset_ratio"],
+        )
         self.assertEqual(
             [item.image_path for item in loaded.results],
             [item.image_path for item in saved.results],
@@ -522,6 +536,46 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual([path.name for path in downloaded], [remote_path.name for remote_path in remote_paths])
         self.assertGreater(len(set(downloader.thread_ids)), 1)
+
+    def test_dropbox_client_lists_all_pages_from_dropbox(self):
+        settings = load_settings(PROJECT_ROOT)
+        client = DropboxClient(settings)
+        first_page = types.SimpleNamespace(
+            entries=[
+                types.SimpleNamespace(
+                    path_display="/captures/2026-04-13/001.jpg",
+                    name="001.jpg",
+                    size=1,
+                    content_hash="a",
+                    server_modified=None,
+                )
+            ],
+            has_more=True,
+            cursor="cursor-1",
+        )
+        second_page = types.SimpleNamespace(
+            entries=[
+                types.SimpleNamespace(
+                    path_display="/captures/2026-04-13/002.jpg",
+                    name="002.jpg",
+                    size=1,
+                    content_hash="b",
+                    server_modified=None,
+                )
+            ],
+            has_more=False,
+            cursor="cursor-2",
+        )
+        fake_client = mock.Mock()
+        fake_client.files_list_folder.return_value = first_page
+        fake_client.files_list_folder_continue.return_value = second_page
+
+        with mock.patch.object(client, "get_client", return_value=fake_client):
+            images = client.list_day_images("/captures/2026-04-13")
+
+        self.assertEqual([item.name for item in images], ["001.jpg", "002.jpg"])
+        fake_client.files_list_folder.assert_called_once_with("/captures/2026-04-13")
+        fake_client.files_list_folder_continue.assert_called_once_with("cursor-1")
 
     def test_dropbox_client_skips_download_when_local_file_matches_remote_metadata(self):
         with workspace_tempdir() as tmpdir:
@@ -604,6 +658,13 @@ class CliTest(unittest.TestCase):
             second = thumbnail_cache_key(image_path, (240, 180))
 
         self.assertNotEqual(first, second)
+
+    def test_extract_capture_seconds_from_filename(self):
+        self.assertEqual(
+            extract_capture_seconds(Path("2026-04-13_09-35-00.jpg")),
+            9 * 3600 + 35 * 60,
+        )
+        self.assertIsNone(extract_capture_seconds(Path("invalid-name.jpg")))
 
     def test_pipeline_summary_counts_blocked_alias_as_abnormal(self):
         settings = load_settings(PROJECT_ROOT)
