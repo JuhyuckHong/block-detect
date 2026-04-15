@@ -22,7 +22,7 @@ from .pipeline import PipelineRunResult, build_pipeline, load_saved_run
 DEFAULT_GUI_DATE = "2026-03-30"
 DEFAULT_GUI_DROPBOX_PATH = "/test_042_new/2026-03-30"
 THUMBNAIL_SIZE = (240, 180)
-SELECTED_PREVIEW_SIZE = (320, 240)
+SELECTED_PREVIEW_SIZE = (520, 360)
 GALLERY_BATCH_SIZE = 8
 TIME_PATTERN = re.compile(r"(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})$")
 
@@ -189,7 +189,7 @@ class DetectionGui:
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(2, weight=1)
+        self.root.rowconfigure(2, weight=3)
         self.root.rowconfigure(3, weight=1)
 
         controls = ttk.Frame(self.root, padding=12)
@@ -247,7 +247,7 @@ class DetectionGui:
 
         main_area = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         main_area.grid(row=2, column=0, sticky="nsew")
-        main_area.columnconfigure(0, weight=4)
+        main_area.columnconfigure(0, weight=3)
         main_area.columnconfigure(1, weight=2)
         main_area.rowconfigure(1, weight=1)
 
@@ -275,21 +275,25 @@ class DetectionGui:
         self.score_plot_canvas.grid(row=0, column=0, sticky="nsew")
         self.score_plot_canvas.bind("<Configure>", self._redraw_score_plot)
 
-        left_panel = ttk.LabelFrame(main_area, text="All Results", padding=8)
-        left_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
+        left_stack = ttk.Frame(main_area)
+        left_stack.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
+        left_stack.columnconfigure(0, weight=1)
+        left_stack.rowconfigure(0, weight=1)
+        left_stack.rowconfigure(1, weight=1)
+
+        left_panel = ttk.LabelFrame(left_stack, text="All Results", padding=8)
+        left_panel.grid(row=0, column=0, sticky="nsew")
         left_panel.columnconfigure(0, weight=1)
         left_panel.rowconfigure(0, weight=1)
 
-        columns = ("file", "label", "score", "reason")
-        self.results_tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=18)
+        columns = ("file", "label", "score")
+        self.results_tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=8)
         self.results_tree.heading("file", text="File")
         self.results_tree.heading("label", text="Label")
         self.results_tree.heading("score", text="Score")
-        self.results_tree.heading("reason", text="Reason")
         self.results_tree.column("file", width=180, anchor="w")
         self.results_tree.column("label", width=90, anchor="center")
         self.results_tree.column("score", width=90, anchor="e")
-        self.results_tree.column("reason", width=360, anchor="w")
         self.results_tree.grid(row=0, column=0, sticky="nsew")
         self.results_tree.bind("<<TreeviewSelect>>", self._on_result_selected)
 
@@ -297,65 +301,69 @@ class DetectionGui:
         tree_scroll.grid(row=0, column=1, sticky="ns")
         self.results_tree.configure(yscrollcommand=tree_scroll.set)
 
-        bottom_area = ttk.Frame(self.root, padding=(12, 0, 12, 12))
-        bottom_area.grid(row=3, column=0, sticky="nsew")
-        bottom_area.columnconfigure(0, weight=1)
-        bottom_area.columnconfigure(1, weight=1)
-        bottom_area.rowconfigure(0, weight=1)
-
-        preview_panel = ttk.LabelFrame(bottom_area, text="Selected Preview", padding=8)
-        preview_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        preview_panel.columnconfigure(1, weight=1)
+        preview_panel = ttk.LabelFrame(left_stack, text="Selected Preview", padding=8)
+        preview_panel.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        preview_panel.columnconfigure(0, weight=1)
         preview_panel.rowconfigure(0, weight=1)
 
-        self.preview_image_label = ttk.Label(preview_panel, text="Select a row to preview.")
-        self.preview_image_label.grid(row=0, column=0, rowspan=4, sticky="nw", padx=(0, 12))
+        self.preview_image_label = ttk.Label(preview_panel, text="Select a row to preview.", anchor="center")
+        self.preview_image_label.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-        ttk.Label(preview_panel, text="File").grid(row=0, column=1, sticky="w")
+        preview_meta = ttk.Frame(preview_panel)
+        preview_meta.grid(row=1, column=0, sticky="ew")
+        preview_meta.columnconfigure(1, weight=1)
+        preview_meta.columnconfigure(3, weight=1)
+        preview_meta.columnconfigure(5, weight=1)
+
+        ttk.Label(preview_meta, text="File").grid(row=0, column=0, sticky="w")
         self.preview_name_var = tk.StringVar(value="-")
-        ttk.Label(preview_panel, textvariable=self.preview_name_var).grid(row=0, column=2, sticky="w")
+        ttk.Label(preview_meta, textvariable=self.preview_name_var).grid(row=0, column=1, sticky="w", padx=(8, 16))
 
-        ttk.Label(preview_panel, text="Label").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(preview_meta, text="Label").grid(row=0, column=2, sticky="w")
         self.preview_label_var = tk.StringVar(value="-")
-        ttk.Label(preview_panel, textvariable=self.preview_label_var).grid(row=1, column=2, sticky="w", pady=(6, 0))
+        ttk.Label(preview_meta, textvariable=self.preview_label_var).grid(row=0, column=3, sticky="w", padx=(8, 16))
 
-        ttk.Label(preview_panel, text="Score").grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(preview_meta, text="Score").grid(row=0, column=4, sticky="w")
         self.preview_score_var = tk.StringVar(value="-")
-        ttk.Label(preview_panel, textvariable=self.preview_score_var).grid(row=2, column=2, sticky="w", pady=(6, 0))
+        ttk.Label(preview_meta, textvariable=self.preview_score_var).grid(row=0, column=5, sticky="w", padx=(8, 0))
 
-        ttk.Label(preview_panel, text="Reason").grid(row=3, column=1, sticky="nw", pady=(6, 0))
+        ttk.Label(preview_panel, text="Reason").grid(row=2, column=0, sticky="w", pady=(10, 0))
         self.preview_reason_var = tk.StringVar(value="-")
         ttk.Label(
             preview_panel,
             textvariable=self.preview_reason_var,
-            wraplength=260,
+            wraplength=560,
             justify="left",
-        ).grid(row=3, column=2, sticky="w", pady=(6, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        ttk.Label(preview_panel, textvariable=self.status_var).grid(
+            row=4,
+            column=0,
+            sticky="w",
+            pady=(10, 0),
+        )
+
+        bottom_area = ttk.Frame(self.root, padding=(12, 0, 12, 12))
+        bottom_area.grid(row=3, column=0, sticky="nsew")
+        bottom_area.columnconfigure(0, weight=1)
+        bottom_area.rowconfigure(0, weight=1)
 
         right_panel = ttk.LabelFrame(bottom_area, text="Blocked Images", padding=8)
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right_panel.grid(row=0, column=0, sticky="nsew")
         right_panel.columnconfigure(0, weight=1)
         right_panel.rowconfigure(0, weight=1)
 
-        self.blocked_canvas = tk.Canvas(right_panel, highlightthickness=0)
+        self.blocked_canvas = tk.Canvas(right_panel, highlightthickness=0, height=260)
         self.blocked_canvas.grid(row=0, column=0, sticky="nsew")
 
-        blocked_scroll = ttk.Scrollbar(right_panel, orient="vertical", command=self.blocked_canvas.yview)
-        blocked_scroll.grid(row=0, column=1, sticky="ns")
-        self.blocked_canvas.configure(yscrollcommand=blocked_scroll.set)
+        blocked_scroll = ttk.Scrollbar(right_panel, orient="horizontal", command=self.blocked_canvas.xview)
+        blocked_scroll.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.blocked_canvas.configure(xscrollcommand=blocked_scroll.set)
 
         self.blocked_frame = ttk.Frame(self.blocked_canvas)
         self.blocked_window = self.blocked_canvas.create_window((0, 0), window=self.blocked_frame, anchor="nw")
         self.blocked_frame.bind("<Configure>", self._sync_blocked_scroll_region)
         self.blocked_canvas.bind("<Configure>", self._resize_blocked_window)
-
-        ttk.Label(preview_panel, textvariable=self.status_var).grid(
-            row=4,
-            column=0,
-            columnspan=3,
-            sticky="w",
-            pady=(10, 0),
-        )
 
     def _create_summary_value(
         self,
@@ -765,7 +773,6 @@ class DetectionGui:
                     result.image_path.name,
                     label,
                     f"{result.score:.4f}",
-                    result.reason,
                 ),
             )
             self.results_by_item_id[item_id] = result
@@ -811,7 +818,7 @@ class DetectionGui:
         for offset, result in enumerate(batch):
             index = existing_cards + offset
             card = ttk.Frame(self.blocked_frame, padding=8, relief="ridge")
-            card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=6, pady=6)
+            card.grid(row=0, column=index, sticky="ns", padx=6, pady=6)
 
             image_label = ttk.Label(card)
             image_label.grid(row=0, column=0, sticky="nsew")
@@ -824,12 +831,6 @@ class DetectionGui:
 
             ttk.Label(card, text=result.image_path.name).grid(row=1, column=0, sticky="w", pady=(8, 0))
             ttk.Label(card, text=f"Score: {result.score:.4f}").grid(row=2, column=0, sticky="w")
-            ttk.Label(card, text=result.reason, wraplength=THUMBNAIL_SIZE[0]).grid(
-                row=3,
-                column=0,
-                sticky="w",
-                pady=(4, 0),
-            )
 
         self.gallery_after_id = None
         if self.pending_blocked_results:
@@ -1030,7 +1031,7 @@ class DetectionGui:
         self.blocked_canvas.configure(scrollregion=self.blocked_canvas.bbox("all"))
 
     def _resize_blocked_window(self, event: tk.Event) -> None:
-        self.blocked_canvas.itemconfigure(self.blocked_window, width=event.width)
+        self.blocked_canvas.configure(scrollregion=self.blocked_canvas.bbox("all"))
 
     def _close(self) -> None:
         self.root.destroy()
