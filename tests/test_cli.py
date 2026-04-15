@@ -38,6 +38,7 @@ from block_detect.gui import (  # noqa: E402
     DetectionGui,
     apply_runtime_overrides,
     blocked_results,
+    calculate_hour_tick_step,
     extract_capture_seconds,
     format_ratio,
     render_preview_image,
@@ -702,6 +703,11 @@ class CliTest(unittest.TestCase):
             9 * 3600 + 35 * 60,
         )
         self.assertIsNone(extract_capture_seconds(Path("invalid-name.jpg")))
+
+    def test_calculate_hour_tick_step_increases_when_plot_is_narrow(self):
+        self.assertEqual(calculate_hour_tick_step(320, 8), 1)
+        self.assertEqual(calculate_hour_tick_step(320, 24), 2)
+        self.assertEqual(calculate_hour_tick_step(800, 24), 1)
 
     def test_gui_writes_error_log_file(self):
         with workspace_tempdir() as tmpdir:

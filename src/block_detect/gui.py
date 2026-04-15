@@ -103,6 +103,13 @@ def extract_capture_seconds(image_path: Path) -> int | None:
     return hour * 3600 + minute * 60 + second
 
 
+def calculate_hour_tick_step(plot_width: int, hour_span: int, min_label_spacing: int = 24) -> int:
+    if hour_span <= 0:
+        return 1
+    pixels_per_hour = max(1.0, plot_width / hour_span)
+    return max(1, math.ceil(min_label_spacing / pixels_per_hour))
+
+
 def apply_runtime_overrides(
     settings: Settings,
     *,
@@ -983,13 +990,15 @@ class DetectionGui:
 
             start_hour = min_time // 3600
             end_hour = math.ceil(max_time / 3600)
+            label_step = calculate_hour_tick_step(right - left, max(1, end_hour - start_hour))
             for hour in range(start_hour, end_hour + 1):
                 tick_seconds = hour * 3600
                 if tick_seconds < min_time or tick_seconds > max_time:
                     continue
                 x = left + ((tick_seconds - min_time) / (max_time - min_time)) * (right - left)
                 canvas.create_line(x, top, x, bottom, fill="#e3e7ec", dash=(2, 4))
-                canvas.create_text(x, height - 6, text=f"{hour:02d}:00", anchor="s", fill="#55606f")
+                if (hour - start_hour) % label_step == 0 or hour == end_hour:
+                    canvas.create_text(x, height - 6, text=str(hour), anchor="s", fill="#55606f")
             canvas.create_text((left + right) / 2, height - 22, text="Time", anchor="s", fill="#55606f")
         elif count == 1:
             x_positions = [(left + right) / 2]
