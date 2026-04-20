@@ -4,7 +4,7 @@ import argparse
 from dataclasses import replace
 
 from .config import load_settings
-from .pipeline import DetectionPipeline
+from .pipeline import DetectionPipeline, build_time_range
 
 
 def build_pipeline(settings=None) -> DetectionPipeline:
@@ -28,6 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dropbox-path",
         help="Override the resolved Dropbox day path.",
+    )
+    parser.add_argument(
+        "--start-time",
+        help="Optional capture start time within the date, e.g. 09:00 or 09:00:00.",
+    )
+    parser.add_argument(
+        "--end-time",
+        help="Optional capture end time within the date, e.g. 18:30 or 18:30:00.",
     )
     parser.add_argument(
         "--dark-threshold",
@@ -90,11 +98,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    summary = pipeline.run_day(args.date, remote_day_path=args.dropbox_path)
+    time_range = build_time_range(args.start_time, args.end_time)
+    summary = pipeline.run_day(
+        args.date,
+        remote_day_path=args.dropbox_path,
+        time_range=time_range,
+    )
     print(
         " ".join(
             [
                 f"date={args.date}",
+                *([] if time_range is None else [f"time={time_range.display_text()}"]),
                 f"processed={summary.processed_count}",
                 f"abnormal={summary.abnormal_count}",
                 f"normal={summary.normal_count}",

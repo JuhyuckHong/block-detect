@@ -6,7 +6,6 @@ import hashlib
 import math
 from pathlib import Path
 from queue import Empty, Queue
-import re
 import threading
 import traceback
 import tkinter as tk
@@ -16,7 +15,14 @@ from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from .classifier import ClassificationResult
 from .config import Settings, load_settings
-from .pipeline import PipelineRunResult, build_pipeline, load_saved_run
+from .pipeline import (
+    PipelineRunResult,
+    TimeRange,
+    build_pipeline,
+    build_time_range,
+    extract_capture_seconds,
+    load_saved_run,
+)
 
 
 DEFAULT_GUI_DATE = "2026-03-30"
@@ -24,7 +30,6 @@ DEFAULT_GUI_DROPBOX_PATH = "/test_042_new/2026-03-30"
 THUMBNAIL_SIZE = (240, 180)
 SELECTED_PREVIEW_SIZE = (360, 360)
 GALLERY_BATCH_SIZE = 8
-TIME_PATTERN = re.compile(r"(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})$")
 
 
 def is_blocked_result(result: ClassificationResult) -> bool:
@@ -89,20 +94,6 @@ def thumbnail_cache_key(image_path: Path, size: tuple[int, int]) -> str:
     return digest
 
 
-def extract_capture_seconds(image_path: Path) -> int | None:
-    stem = image_path.stem
-    candidate = stem.split("_")[-1]
-    match = TIME_PATTERN.search(candidate)
-    if match is None:
-        return None
-    hour = int(match.group("hour"))
-    minute = int(match.group("minute"))
-    second = int(match.group("second"))
-    if hour >= 24 or minute >= 60 or second >= 60:
-        return None
-    return hour * 3600 + minute * 60 + second
-
-
 def calculate_hour_tick_step(plot_width: int, hour_span: int, min_label_spacing: int = 24) -> int:
     if hour_span <= 0:
         return 1
@@ -147,6 +138,8 @@ class DetectionGui:
         self.pending_blocked_results: list[ClassificationResult] = []
 
         self.dropbox_path_var = tk.StringVar(value=DEFAULT_GUI_DROPBOX_PATH)
+        self.start_time_var = tk.StringVar(value="")
+        self.end_time_var = tk.StringVar(value="")
         self.download_workers_var = tk.StringVar(value=str(self.settings.download_workers))
         self.classify_workers_var = tk.StringVar(value=str(self.settings.classify_workers))
         self.score_threshold_var = tk.DoubleVar(value=self.settings.score_threshold)
@@ -170,6 +163,8 @@ class DetectionGui:
 
         self._build_layout()
         self.dropbox_path_var.trace_add("write", self._on_inputs_changed)
+        self.start_time_var.trace_add("write", self._on_inputs_changed)
+        self.end_time_var.trace_add("write", self._on_inputs_changed)
         self.score_threshold_var.trace_add("write", self._on_visual_threshold_changed)
         self.roi_line_offset_ratio_var.trace_add("write", self._on_visual_threshold_changed)
         self.root.after(100, self._poll_result_queue)
@@ -211,31 +206,38 @@ class DetectionGui:
         self.load_button = ttk.Button(controls, text="Load Existing", command=self.load_existing)
         self.load_button.grid(row=0, column=8, sticky="ew", padx=6)
 
-        ttk.Label(controls, text="Download Workers").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.download_workers_var, width=8).grid(row=1, column=1, sticky="w", pady=(10, 0))
+        ttk.Label(controls, text="Start Time").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.start_time_var, width=10).grid(row=1, column=1, sticky="w", pady=(10, 0))
 
-        ttk.Label(controls, text="Classify Workers").grid(row=1, column=2, sticky="w", padx=(16, 8), pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.classify_workers_var, width=8).grid(row=1, column=3, sticky="w", pady=(10, 0))
+        ttk.Label(controls, text="End Time").grid(row=1, column=2, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.end_time_var, width=10).grid(row=1, column=3, sticky="w", pady=(10, 0))
 
-        ttk.Label(controls, text="Score Threshold").grid(row=1, column=4, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.download_workers_var, width=8).grid(row=2, column=1, sticky="w", pady=(10, 0))
+
+        ttk.Label(controls, text="Download Workers").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+
+        ttk.Label(controls, text="Classify Workers").grid(row=2, column=2, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.classify_workers_var, width=8).grid(row=2, column=3, sticky="w", pady=(10, 0))
+
+        ttk.Label(controls, text="Score Threshold").grid(row=2, column=4, sticky="w", padx=(16, 8), pady=(10, 0))
         ttk.Scale(
             controls,
             from_=0.0,
             to=1.0,
             variable=self.score_threshold_var,
             orient="horizontal",
-        ).grid(row=1, column=5, sticky="ew", pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.score_threshold_var, width=8).grid(row=1, column=6, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=5, sticky="ew", pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.score_threshold_var, width=8).grid(row=2, column=6, sticky="w", pady=(10, 0))
 
-        ttk.Label(controls, text="ROI Offset").grid(row=1, column=7, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Label(controls, text="ROI Offset").grid(row=2, column=7, sticky="w", padx=(16, 8), pady=(10, 0))
         ttk.Scale(
             controls,
             from_=0.0,
             to=0.35,
             variable=self.roi_line_offset_ratio_var,
             orient="horizontal",
-        ).grid(row=1, column=8, sticky="ew", pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.roi_line_offset_ratio_var, width=8).grid(row=1, column=9, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=8, sticky="ew", pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.roi_line_offset_ratio_var, width=8).grid(row=2, column=9, sticky="w", pady=(10, 0))
 
         progress = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         progress.grid(row=1, column=0, sticky="ew")
@@ -372,6 +374,7 @@ class DetectionGui:
             day = self._selected_day()
             if not day:
                 raise ValueError("Dropbox Path must end with a date-like folder name.")
+            time_range = self._selected_time_range()
             download_workers = max(1, int(self.download_workers_var.get().strip()))
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
@@ -394,6 +397,7 @@ class DetectionGui:
             args=(
                 day,
                 remote_path_override,
+                time_range,
                 download_workers,
                 classify_workers,
                 score_threshold,
@@ -405,8 +409,10 @@ class DetectionGui:
 
     def _saved_run_paths(self) -> tuple[Path, Path]:
         day = self._selected_day()
+        time_range = self._selected_time_range()
+        report_name = day if time_range is None else f"{day}__{time_range.report_suffix()}"
         return (
-            self.settings.reports_dir / f"{day}.json",
+            self.settings.reports_dir / f"{report_name}.json",
             self.settings.inbox_dir / day,
         )
 
@@ -422,6 +428,7 @@ class DetectionGui:
                 f"Timestamp: {datetime.now().isoformat(timespec='seconds')}",
                 f"Context: {context}",
                 f"Selected Day: {selected_day or '-'}",
+                f"Time Range: {self._selected_time_range_text()}",
                 f"Dropbox Path: {dropbox_path or '-'}",
                 "",
                 error_text.strip(),
@@ -462,12 +469,32 @@ class DetectionGui:
             return ""
         return Path(path_value).name
 
+    def _selected_time_range(self) -> TimeRange | None:
+        start_time_var = getattr(self, "start_time_var", None)
+        end_time_var = getattr(self, "end_time_var", None)
+        start_time = "" if start_time_var is None else start_time_var.get()
+        end_time = "" if end_time_var is None else end_time_var.get()
+        return build_time_range(start_time, end_time)
+
+    def _selected_time_range_text(self) -> str:
+        try:
+            time_range = self._selected_time_range()
+        except ValueError:
+            return "invalid"
+        return "-" if time_range is None else time_range.display_text()
+
     def _update_action_button_state(self) -> None:
-        report_path, inbox_dir = self._saved_run_paths()
-        if report_path.exists() and inbox_dir.exists():
-            self.load_button.state(["!disabled"])
-        else:
+        try:
+            report_path, inbox_dir = self._saved_run_paths()
+        except ValueError:
             self.load_button.state(["disabled"])
+            day = self._selected_day()
+            inbox_dir = self.settings.inbox_dir / day if day else self.settings.inbox_dir / "__invalid__"
+        else:
+            if report_path.exists() and inbox_dir.exists():
+                self.load_button.state(["!disabled"])
+            else:
+                self.load_button.state(["disabled"])
         if inbox_dir.exists():
             self.apply_threshold_button.state(["!disabled"])
         else:
@@ -485,14 +512,20 @@ class DetectionGui:
             return
 
         day = self._selected_day()
-        report_path, inbox_dir = self._saved_run_paths()
+        try:
+            time_range = self._selected_time_range()
+            report_path, inbox_dir = self._saved_run_paths()
+        except ValueError as exc:
+            self.status_var.set(str(exc))
+            self._update_action_button_state()
+            return
         if not report_path.exists() or not inbox_dir.exists():
             self.status_var.set("No saved download/report found for this date.")
             self._update_action_button_state()
             return
 
         try:
-            run_result = load_saved_run(day, settings=self.settings)
+            run_result = load_saved_run(day, settings=self.settings, time_range=time_range)
             self._apply_saved_classification_settings(run_result.classification_settings)
             self._clear_results()
             self._apply_run_result(run_result)
@@ -531,6 +564,7 @@ class DetectionGui:
             day = self._selected_day()
             if not day:
                 raise ValueError("Dropbox Path must end with a date-like folder name.")
+            time_range = self._selected_time_range()
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
             roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
@@ -560,6 +594,7 @@ class DetectionGui:
             args=(
                 day,
                 remote_path_override,
+                time_range,
                 classify_workers,
                 score_threshold,
                 roi_line_offset_ratio,
@@ -572,6 +607,7 @@ class DetectionGui:
         self,
         day: str,
         remote_path_override: str | None,
+        time_range: TimeRange | None,
         download_workers: int,
         classify_workers: int,
         score_threshold: float,
@@ -589,6 +625,7 @@ class DetectionGui:
             result = pipeline.run_day_with_details(
                 day,
                 remote_day_path=remote_path_override,
+                time_range=time_range,
                 progress_callback=self._emit_progress,
             )
             self.result_queue.put(("success", result))
@@ -607,6 +644,7 @@ class DetectionGui:
         self,
         day: str,
         remote_path_override: str | None,
+        time_range: TimeRange | None,
         classify_workers: int,
         score_threshold: float,
         roi_line_offset_ratio: float,
@@ -623,6 +661,7 @@ class DetectionGui:
             result = pipeline.run_local_day_with_details(
                 day,
                 remote_day_path=remote_path_override,
+                time_range=time_range,
                 progress_callback=self._emit_progress,
             )
             self.result_queue.put(("success", result))

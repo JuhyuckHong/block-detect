@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
-from typing import Callable
+import re
+from typing import Any, Callable
 
 from .classifier import BlackPixelClassifier, BlockClassifier, ClassificationResult
 from .config import Settings, ensure_workspace_dirs, load_settings
@@ -30,6 +32,79 @@ class PipelineRunResult:
 
 
 ProgressCallback = Callable[[str, int, int], None]
+TIME_PATTERN = re.compile(r"(?P<hour>\d{2})-(?P<minute>\d{2})-(?P<second>\d{2})$")
+DAY_START_SECONDS = 0
+DAY_END_SECONDS = (24 * 3600) - 1
+
+
+@dataclass(frozen=True)
+class TimeRange:
+    start_seconds: int
+    end_seconds: int
+
+    def contains(self, capture_seconds: int | None) -> bool:
+        if capture_seconds is None:
+            return False
+        return self.start_seconds <= capture_seconds <= self.end_seconds
+
+    def report_suffix(self) -> str:
+        return f"{format_seconds_for_filename(self.start_seconds)}-{format_seconds_for_filename(self.end_seconds)}"
+
+    def display_text(self) -> str:
+        return f"{format_seconds_for_display(self.start_seconds)}~{format_seconds_for_display(self.end_seconds)}"
+
+
+def extract_capture_seconds(image_path: Path) -> int | None:
+    stem = image_path.stem
+    candidate = stem.split("_")[-1]
+    match = TIME_PATTERN.search(candidate)
+    if match is None:
+        return None
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute"))
+    second = int(match.group("second"))
+    if hour >= 24 or minute >= 60 or second >= 60:
+        return None
+    return hour * 3600 + minute * 60 + second
+
+
+def parse_time_value(value: str) -> int:
+    text = value.strip()
+    for pattern in ("%H:%M", "%H:%M:%S", "%H%M", "%H%M%S"):
+        try:
+            parsed = datetime.strptime(text, pattern)
+            return parsed.hour * 3600 + parsed.minute * 60 + parsed.second
+        except ValueError:
+            continue
+    raise ValueError("Time must be in HH:MM or HH:MM:SS format.")
+
+
+def build_time_range(start_time: str | None, end_time: str | None) -> TimeRange | None:
+    start_text = (start_time or "").strip()
+    end_text = (end_time or "").strip()
+    if not start_text and not end_text:
+        return None
+    start_seconds = parse_time_value(start_text) if start_text else DAY_START_SECONDS
+    end_seconds = parse_time_value(end_text) if end_text else DAY_END_SECONDS
+    if start_seconds > end_seconds:
+        raise ValueError("Start time must be earlier than or equal to end time.")
+    return TimeRange(start_seconds=start_seconds, end_seconds=end_seconds)
+
+
+def format_seconds_for_display(value: int) -> str:
+    hour = value // 3600
+    minute = (value % 3600) // 60
+    second = value % 60
+    if second == 0:
+        return f"{hour:02d}:{minute:02d}"
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
+
+
+def format_seconds_for_filename(value: int) -> str:
+    hour = value // 3600
+    minute = (value % 3600) // 60
+    second = value % 60
+    return f"{hour:02d}{minute:02d}{second:02d}"
 
 
 class DetectionPipeline:
@@ -127,16 +202,47 @@ class DetectionPipeline:
             if path.is_file() and path.suffix.lower() in image_extensions
         )
 
+    def filter_image_paths_by_time_range(
+        self,
+        image_paths: list[Path],
+        time_range: TimeRange | None = None,
+    ) -> list[Path]:
+        if time_range is None:
+            return image_paths
+        return [
+            image_path
+            for image_path in image_paths
+            if time_range.contains(extract_capture_seconds(image_path))
+        ]
+
+    def filter_remote_images_by_time_range(
+        self,
+        remote_images: list[Any],
+        time_range: TimeRange | None = None,
+    ) -> list[Any]:
+        if time_range is None:
+            return remote_images
+        filtered = []
+        for remote_image in remote_images:
+            capture_seconds = extract_capture_seconds(Path(getattr(remote_image, "name", "")))
+            if capture_seconds is None:
+                capture_seconds = extract_capture_seconds(Path(getattr(remote_image, "path_display", "")))
+            if time_range.contains(capture_seconds):
+                filtered.append(remote_image)
+        return filtered
+
     def run_day_with_details(
         self,
         day: str,
         remote_day_path: str | None = None,
+        time_range: TimeRange | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> PipelineRunResult:
         self.prepare()
         resolved_remote_path = remote_day_path or self.build_remote_day_path(day)
         local_target_dir = self.settings.inbox_dir / day
         remote_paths = self.dropbox_client.list_day_images(resolved_remote_path)
+        remote_paths = self.filter_remote_images_by_time_range(remote_paths, time_range=time_range)
         image_paths = self.dropbox_client.download_images(
             remote_paths,
             local_target_dir,
@@ -146,7 +252,7 @@ class DetectionPipeline:
         )
         results = self.classify_local_images(image_paths, progress_callback=progress_callback)
         summary = self.summarize(results)
-        report_path = self.write_report(day, resolved_remote_path, results, summary)
+        report_path = self.write_report(day, resolved_remote_path, results, summary, time_range=time_range)
         return PipelineRunResult(
             day=day,
             remote_day_path=resolved_remote_path,
@@ -163,14 +269,15 @@ class DetectionPipeline:
         self,
         day: str,
         remote_day_path: str | None = None,
+        time_range: TimeRange | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> PipelineRunResult:
         self.prepare()
         resolved_remote_path = remote_day_path or self.build_remote_day_path(day)
-        image_paths = self.list_local_images(day)
+        image_paths = self.filter_image_paths_by_time_range(self.list_local_images(day), time_range=time_range)
         results = self.classify_local_images(image_paths, progress_callback=progress_callback)
         summary = self.summarize(results)
-        report_path = self.write_report(day, resolved_remote_path, results, summary)
+        report_path = self.write_report(day, resolved_remote_path, results, summary, time_range=time_range)
         return PipelineRunResult(
             day=day,
             remote_day_path=resolved_remote_path,
@@ -183,8 +290,17 @@ class DetectionPipeline:
             },
         )
 
-    def run_day(self, day: str, remote_day_path: str | None = None) -> PipelineSummary:
-        return self.run_day_with_details(day, remote_day_path=remote_day_path).summary
+    def run_day(
+        self,
+        day: str,
+        remote_day_path: str | None = None,
+        time_range: TimeRange | None = None,
+    ) -> PipelineSummary:
+        return self.run_day_with_details(day, remote_day_path=remote_day_path, time_range=time_range).summary
+
+    def report_path_for_day(self, day: str, time_range: TimeRange | None = None) -> Path:
+        report_name = day if time_range is None else f"{day}__{time_range.report_suffix()}"
+        return self.settings.reports_dir / f"{report_name}.json"
 
     def write_report(
         self,
@@ -192,11 +308,19 @@ class DetectionPipeline:
         remote_day_path: str,
         results: list[ClassificationResult],
         summary: PipelineSummary,
+        time_range: TimeRange | None = None,
     ) -> Path:
-        report_path = self.settings.reports_dir / f"{day}.json"
+        report_path = self.report_path_for_day(day, time_range=time_range)
         payload = {
             "day": day,
             "remote_day_path": remote_day_path,
+            "time_range": None
+            if time_range is None
+            else {
+                "start_seconds": time_range.start_seconds,
+                "end_seconds": time_range.end_seconds,
+                "display": time_range.display_text(),
+            },
             "classification_settings": {
                 "score_threshold": self.settings.score_threshold,
                 "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
@@ -228,9 +352,14 @@ def build_pipeline(settings: Settings | None = None) -> DetectionPipeline:
     return DetectionPipeline(settings=settings or load_settings())
 
 
-def load_saved_run(day: str, settings: Settings | None = None) -> PipelineRunResult:
+def load_saved_run(
+    day: str,
+    settings: Settings | None = None,
+    time_range: TimeRange | None = None,
+) -> PipelineRunResult:
     resolved_settings = settings or load_settings()
-    report_path = resolved_settings.reports_dir / f"{day}.json"
+    report_name = day if time_range is None else f"{day}__{time_range.report_suffix()}"
+    report_path = resolved_settings.reports_dir / f"{report_name}.json"
     payload = json.loads(report_path.read_text(encoding="utf-8"))
 
     results = [

@@ -48,6 +48,7 @@ from block_detect.pipeline import (  # noqa: E402
     DetectionPipeline,
     PipelineRunResult,
     PipelineSummary,
+    build_time_range,
     load_saved_run,
 )
 
@@ -96,13 +97,18 @@ class FakeDropboxClient:
 class FakePipeline:
     def __init__(self):
         self.prepare_called = False
-        self.run_calls: list[tuple[str, str | None]] = []
+        self.run_calls: list[tuple[str, str | None, object]] = []
 
     def prepare(self) -> None:
         self.prepare_called = True
 
-    def run_day(self, day: str, remote_day_path: str | None = None) -> PipelineSummary:
-        self.run_calls.append((day, remote_day_path))
+    def run_day(
+        self,
+        day: str,
+        remote_day_path: str | None = None,
+        time_range=None,
+    ) -> PipelineSummary:
+        self.run_calls.append((day, remote_day_path, time_range))
         return PipelineSummary(
             processed_count=6,
             abnormal_count=5,
@@ -451,6 +457,152 @@ class CliTest(unittest.TestCase):
             self.assertEqual(run_result.summary.normal_count, 1)
             self.assertTrue(run_result.report_path.exists())
 
+    def test_pipeline_filters_downloads_by_time_range(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = replace(load_settings(workspace), classify_workers=1, download_workers=1)
+            ensure_workspace_dirs(settings)
+            fixtures_dir = workspace / "fixtures"
+            fixtures_dir.mkdir(parents=True, exist_ok=True)
+            early_path = fixtures_dir / "2026-04-13_08-59-59.png"
+            start_path = fixtures_dir / "2026-04-13_09-00-00.png"
+            middle_path = fixtures_dir / "2026-04-13_09-30-00.png"
+            late_path = fixtures_dir / "2026-04-13_10-00-01.png"
+            for path in [early_path, start_path, middle_path, late_path]:
+                create_roi_normal_image(path)
+            file_map = {
+                f"/captures/2026-04-13/{path.name}": path
+                for path in [early_path, start_path, middle_path, late_path]
+            }
+            fake_dropbox = FakeDropboxClient(file_map)
+            pipeline = DetectionPipeline(
+                settings=settings,
+                classifier=SequenceClassifier(),
+                dropbox_client=fake_dropbox,
+            )
+
+            run_result = pipeline.run_day_with_details(
+                "2026-04-13",
+                remote_day_path="/captures/2026-04-13",
+                time_range=build_time_range("09:00", "10:00"),
+            )
+
+        self.assertEqual(run_result.summary.processed_count, 2)
+        self.assertEqual(
+            [Path(path).name for path in fake_dropbox.downloaded_paths],
+            ["2026-04-13_09-00-00.png", "2026-04-13_09-30-00.png"],
+        )
+        self.assertEqual(run_result.report_path.name, "2026-04-13__090000-100000.json")
+
+    def test_pipeline_filters_local_reclassify_by_time_range(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = replace(load_settings(workspace), classify_workers=1)
+            ensure_workspace_dirs(settings)
+            day = "2026-04-13"
+            local_day_dir = settings.inbox_dir / day
+            local_day_dir.mkdir(parents=True, exist_ok=True)
+            for filename in [
+                "2026-04-13_08-00-00.png",
+                "2026-04-13_09-15-00.png",
+                "2026-04-13_09-45-00.png",
+                "2026-04-13_10-30-00.png",
+            ]:
+                create_roi_normal_image(local_day_dir / filename)
+            pipeline = DetectionPipeline(
+                settings=settings,
+                classifier=SequenceClassifier(),
+                dropbox_client=FakeDropboxClient({}),
+            )
+
+            run_result = pipeline.run_local_day_with_details(
+                day,
+                remote_day_path="/captures/2026-04-13",
+                time_range=build_time_range("09:00", "10:00"),
+            )
+
+        self.assertEqual(
+            [result.image_path.name for result in run_result.results],
+            ["2026-04-13_09-15-00.png", "2026-04-13_09-45-00.png"],
+        )
+
+    def test_build_time_range_allows_open_bounds(self):
+        start_only = build_time_range("09:00", "")
+        end_only = build_time_range("", "10:00")
+        full_day = build_time_range("", "")
+
+        self.assertIsNotNone(start_only)
+        self.assertEqual(start_only.start_seconds, 9 * 3600)
+        self.assertEqual(start_only.end_seconds, (24 * 3600) - 1)
+        self.assertEqual(start_only.display_text(), "09:00~23:59:59")
+        self.assertIsNotNone(end_only)
+        self.assertEqual(end_only.start_seconds, 0)
+        self.assertEqual(end_only.end_seconds, 10 * 3600)
+        self.assertEqual(end_only.display_text(), "00:00~10:00")
+        self.assertIsNone(full_day)
+
+    def test_pipeline_filters_start_only_time_range_to_end_of_day(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = replace(load_settings(workspace), classify_workers=1)
+            ensure_workspace_dirs(settings)
+            day = "2026-04-13"
+            local_day_dir = settings.inbox_dir / day
+            local_day_dir.mkdir(parents=True, exist_ok=True)
+            for filename in [
+                "2026-04-13_08-59-59.png",
+                "2026-04-13_09-00-00.png",
+                "2026-04-13_23-59-59.png",
+            ]:
+                create_roi_normal_image(local_day_dir / filename)
+            pipeline = DetectionPipeline(
+                settings=settings,
+                classifier=SequenceClassifier(),
+                dropbox_client=FakeDropboxClient({}),
+            )
+
+            run_result = pipeline.run_local_day_with_details(
+                day,
+                remote_day_path="/captures/2026-04-13",
+                time_range=build_time_range("09:00", ""),
+            )
+
+        self.assertEqual(
+            [result.image_path.name for result in run_result.results],
+            ["2026-04-13_09-00-00.png", "2026-04-13_23-59-59.png"],
+        )
+
+    def test_pipeline_filters_end_only_time_range_from_start_of_day(self):
+        with workspace_tempdir() as tmpdir:
+            workspace = Path(tmpdir)
+            settings = replace(load_settings(workspace), classify_workers=1)
+            ensure_workspace_dirs(settings)
+            day = "2026-04-13"
+            local_day_dir = settings.inbox_dir / day
+            local_day_dir.mkdir(parents=True, exist_ok=True)
+            for filename in [
+                "2026-04-13_00-00-00.png",
+                "2026-04-13_10-00-00.png",
+                "2026-04-13_10-00-01.png",
+            ]:
+                create_roi_normal_image(local_day_dir / filename)
+            pipeline = DetectionPipeline(
+                settings=settings,
+                classifier=SequenceClassifier(),
+                dropbox_client=FakeDropboxClient({}),
+            )
+
+            run_result = pipeline.run_local_day_with_details(
+                day,
+                remote_day_path="/captures/2026-04-13",
+                time_range=build_time_range("", "10:00"),
+            )
+
+        self.assertEqual(
+            [result.image_path.name for result in run_result.results],
+            ["2026-04-13_00-00-00.png", "2026-04-13_10-00-00.png"],
+        )
+
     def test_load_saved_run_reconstructs_results_from_report(self):
         with workspace_tempdir() as tmpdir:
             workspace = Path(tmpdir)
@@ -754,7 +906,7 @@ class CliTest(unittest.TestCase):
                 exit_code = cli.main(["--date", "2026-04-13"])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(fake_pipeline.run_calls, [("2026-04-13", None)])
+        self.assertEqual(fake_pipeline.run_calls, [("2026-04-13", None, None)])
         self.assertIn("processed=6", stdout.getvalue())
 
     def test_main_applies_worker_overrides(self):
@@ -782,6 +934,28 @@ class CliTest(unittest.TestCase):
         self.assertEqual(captured_settings["settings"].download_workers, 7)
         self.assertEqual(captured_settings["settings"].classify_workers, 5)
         self.assertIn("processed=6", stdout.getvalue())
+
+    def test_main_accepts_time_range(self):
+        fake_pipeline = FakePipeline()
+        stdout = io.StringIO()
+
+        with mock.patch("block_detect.cli.build_pipeline", return_value=fake_pipeline):
+            with redirect_stdout(stdout):
+                exit_code = cli.main(
+                    [
+                        "--date",
+                        "2026-04-13",
+                        "--start-time",
+                        "09:00",
+                        "--end-time",
+                        "10:30",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fake_pipeline.run_calls[0][0], "2026-04-13")
+        self.assertIsNotNone(fake_pipeline.run_calls[0][2])
+        self.assertIn("time=09:00~10:30", stdout.getvalue())
 
     def test_dropbox_client_prefers_refresh_token_flow_when_both_exist(self):
         with workspace_tempdir() as tmpdir:
