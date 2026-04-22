@@ -120,7 +120,8 @@ class DetectionPipeline:
         self.classifier = classifier or BlackPixelClassifier(
             dark_threshold=settings.dark_threshold,
             score_threshold=settings.score_threshold,
-            roi_line_offset_ratio=settings.roi_line_offset_ratio,
+            roi_left_y_ratio=settings.roi_left_y_ratio,
+            roi_bottom_x_ratio=settings.roi_bottom_x_ratio,
         )
         self.dropbox_client = dropbox_client or DropboxClient(settings)
 
@@ -261,7 +262,8 @@ class DetectionPipeline:
             report_path=report_path,
             classification_settings={
                 "score_threshold": self.settings.score_threshold,
-                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+                "roi_left_y_ratio": self.settings.roi_left_y_ratio,
+                "roi_bottom_x_ratio": self.settings.roi_bottom_x_ratio,
             },
         )
 
@@ -286,7 +288,8 @@ class DetectionPipeline:
             report_path=report_path,
             classification_settings={
                 "score_threshold": self.settings.score_threshold,
-                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+                "roi_left_y_ratio": self.settings.roi_left_y_ratio,
+                "roi_bottom_x_ratio": self.settings.roi_bottom_x_ratio,
             },
         )
 
@@ -323,7 +326,8 @@ class DetectionPipeline:
             },
             "classification_settings": {
                 "score_threshold": self.settings.score_threshold,
-                "roi_line_offset_ratio": self.settings.roi_line_offset_ratio,
+                "roi_left_y_ratio": self.settings.roi_left_y_ratio,
+                "roi_bottom_x_ratio": self.settings.roi_bottom_x_ratio,
             },
             "summary": {
                 "processed_count": summary.processed_count,
@@ -394,10 +398,19 @@ def load_saved_run(
                     resolved_settings.score_threshold,
                 )
             ),
-            "roi_line_offset_ratio": float(
+            "roi_left_y_ratio": float(
                 classification_settings_payload.get(
-                    "roi_line_offset_ratio",
-                    resolved_settings.roi_line_offset_ratio,
+                    "roi_left_y_ratio",
+                    classification_settings_payload.get(
+                        "roi_line_offset_ratio",
+                        resolved_settings.roi_left_y_ratio,
+                    ),
+                )
+            ),
+            "roi_bottom_x_ratio": float(
+                classification_settings_payload.get(
+                    "roi_bottom_x_ratio",
+                    resolved_settings.roi_bottom_x_ratio,
                 )
             ),
         },

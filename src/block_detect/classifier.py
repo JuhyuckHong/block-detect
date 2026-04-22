@@ -27,22 +27,35 @@ class BlackPixelClassifier:
         self,
         dark_threshold: int = 32,
         score_threshold: float = 0.80,
-        roi_line_offset_ratio: float = 0.12,
+        roi_left_y_ratio: float = 0.30,
+        roi_bottom_x_ratio: float = 0.40,
     ):
         self.dark_threshold = dark_threshold
         self.score_threshold = score_threshold
-        self.roi_line_offset_ratio = max(0.0, min(0.95, roi_line_offset_ratio))
+        self.roi_left_y_ratio = max(0.0, min(1.0, roi_left_y_ratio))
+        self.roi_bottom_x_ratio = max(0.0, min(1.0, roi_bottom_x_ratio))
 
-    def _roi_offset_pixels(self, height: int) -> int:
+    def _roi_left_y_pixels(self, height: int) -> int:
         if height <= 1:
             return 0
-        return int(round((height - 1) * self.roi_line_offset_ratio))
+        return int(round((height - 1) * self.roi_left_y_ratio))
+
+    def _roi_bottom_x_pixels(self, width: int) -> int:
+        if width <= 1:
+            return 0
+        return int(round((width - 1) * self.roi_bottom_x_ratio))
 
     def _is_in_lower_left_region(self, x: int, y: int, width: int, height: int) -> bool:
         if width <= 1 or height <= 1:
             return True
-        offset_pixels = self._roi_offset_pixels(height)
-        return y * (width - 1) >= x * (height - 1) + offset_pixels * (width - 1)
+        left_y = self._roi_left_y_pixels(height)
+        bottom_x = self._roi_bottom_x_pixels(width)
+        if bottom_x <= 0:
+            return x == 0 and y >= left_y
+        if x > bottom_x:
+            return False
+        bottom_y = height - 1
+        return (y - left_y) * bottom_x >= x * (bottom_y - left_y)
 
     def _region_pixels(self, grayscale: Image.Image) -> list[int]:
         width, height = grayscale.size
@@ -73,8 +86,9 @@ class BlackPixelClassifier:
                 f"score={score:.4f}, "
                 f"mean_brightness={mean_brightness:.2f}, "
                 f"score_threshold={self.score_threshold:.2f}, "
-                f"roi_line_offset_ratio={self.roi_line_offset_ratio:.2f}, "
-                "roi=shifted_lower_left_triangle"
+                f"roi_left_y_ratio={self.roi_left_y_ratio:.2f}, "
+                f"roi_bottom_x_ratio={self.roi_bottom_x_ratio:.2f}, "
+                "roi=lower_left_edge_triangle"
             ),
         )
 

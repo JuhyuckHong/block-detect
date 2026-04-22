@@ -184,6 +184,13 @@ def create_border_occlusion_image(image_path: Path) -> None:
     image.save(image_path)
 
 
+def create_lower_left_edge_roi_occlusion_image(image_path: Path) -> None:
+    image = Image.new("L", (200, 120), color=220)
+    draw = ImageDraw.Draw(image)
+    draw.polygon([(0, 36), (80, 119), (0, 119)], fill=0)
+    image.save(image_path)
+
+
 class CliTest(unittest.TestCase):
     def test_prepare_creates_workspace_dirs(self):
         with workspace_tempdir() as tmpdir:
@@ -240,7 +247,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(settings.dropbox_day_template, "{date}/camera-a")
         self.assertEqual(settings.dark_threshold, 32)
         self.assertEqual(settings.score_threshold, 0.80)
-        self.assertEqual(settings.roi_line_offset_ratio, 0.12)
+        self.assertEqual(settings.roi_left_y_ratio, 0.30)
+        self.assertEqual(settings.roi_bottom_x_ratio, 0.40)
         self.assertEqual(settings.dark_ratio_threshold, 0.58)
         self.assertEqual(settings.mean_brightness_threshold, 50.0)
         self.assertEqual(settings.border_dark_region_threshold, 0.48)
@@ -327,10 +335,7 @@ class CliTest(unittest.TestCase):
 
         with workspace_tempdir() as tmpdir:
             image_path = Path(tmpdir) / "border-occlusion.png"
-            image = Image.new("L", (200, 120), color=80)
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((0, 0, 109, 119), fill=0)
-            image.save(image_path)
+            create_lower_left_edge_roi_occlusion_image(image_path)
 
             result = classifier.classify(image_path)
 
@@ -364,7 +369,7 @@ class CliTest(unittest.TestCase):
             result = classifier.classify(image_path)
 
         self.assertEqual(result.label, "normal")
-        self.assertIn("roi=shifted_lower_left_triangle", result.reason)
+        self.assertIn("roi=lower_left_edge_triangle", result.reason)
 
     def test_pipeline_runs_day_batch(self):
         with workspace_tempdir() as tmpdir:
@@ -423,8 +428,12 @@ class CliTest(unittest.TestCase):
             self.assertEqual(len(run_result.results), 6)
             self.assertEqual(run_result.classification_settings["score_threshold"], settings.score_threshold)
             self.assertEqual(
-                run_result.classification_settings["roi_line_offset_ratio"],
-                settings.roi_line_offset_ratio,
+                run_result.classification_settings["roi_left_y_ratio"],
+                settings.roi_left_y_ratio,
+            )
+            self.assertEqual(
+                run_result.classification_settings["roi_bottom_x_ratio"],
+                settings.roi_bottom_x_ratio,
             )
 
     def test_pipeline_can_reclassify_existing_local_day_without_download(self):
@@ -632,8 +641,12 @@ class CliTest(unittest.TestCase):
             saved.classification_settings["score_threshold"],
         )
         self.assertEqual(
-            loaded.classification_settings["roi_line_offset_ratio"],
-            saved.classification_settings["roi_line_offset_ratio"],
+            loaded.classification_settings["roi_left_y_ratio"],
+            saved.classification_settings["roi_left_y_ratio"],
+        )
+        self.assertEqual(
+            loaded.classification_settings["roi_bottom_x_ratio"],
+            saved.classification_settings["roi_bottom_x_ratio"],
         )
         self.assertEqual(
             [item.image_path for item in loaded.results],
@@ -819,8 +832,8 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(plain.size, (100, 60))
         self.assertEqual(overlay.size, (100, 60))
-        self.assertNotEqual(plain.getpixel((80, 10)), overlay.getpixel((80, 10)))
-        self.assertNotEqual(plain.getpixel((50, 30)), overlay.getpixel((50, 30)))
+        self.assertEqual(plain.getpixel((80, 10)), overlay.getpixel((80, 10)))
+        self.assertNotEqual(plain.getpixel((10, 50)), overlay.getpixel((10, 50)))
 
     def test_apply_runtime_overrides_updates_thresholds(self):
         settings = load_settings(PROJECT_ROOT)
@@ -830,13 +843,15 @@ class CliTest(unittest.TestCase):
             download_workers=3,
             classify_workers=5,
             score_threshold=0.62,
-            roi_line_offset_ratio=0.18,
+            roi_left_y_ratio=0.25,
+            roi_bottom_x_ratio=0.45,
         )
 
         self.assertEqual(updated.download_workers, 3)
         self.assertEqual(updated.classify_workers, 5)
         self.assertEqual(updated.score_threshold, 0.62)
-        self.assertEqual(updated.roi_line_offset_ratio, 0.18)
+        self.assertEqual(updated.roi_left_y_ratio, 0.25)
+        self.assertEqual(updated.roi_bottom_x_ratio, 0.45)
 
     def test_thumbnail_cache_key_changes_when_file_changes(self):
         with workspace_tempdir() as tmpdir:

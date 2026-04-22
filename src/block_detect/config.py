@@ -51,7 +51,8 @@ class Settings:
     dropbox_day_template: str
     dark_threshold: int
     score_threshold: float
-    roi_line_offset_ratio: float
+    roi_left_y_ratio: float
+    roi_bottom_x_ratio: float
     dark_ratio_threshold: float
     mean_brightness_threshold: float
     border_dark_region_threshold: float
@@ -87,9 +88,8 @@ def load_settings(workspace_dir: Path | None = None) -> Settings:
                 "0.80",
             )
         ),
-        roi_line_offset_ratio=float(
-            os.getenv("BLOCK_DETECT_ROI_LINE_OFFSET_RATIO", "0.12")
-        ),
+        roi_left_y_ratio=float(os.getenv("BLOCK_DETECT_ROI_LEFT_Y_RATIO", "0.30")),
+        roi_bottom_x_ratio=float(os.getenv("BLOCK_DETECT_ROI_BOTTOM_X_RATIO", "0.40")),
         dark_ratio_threshold=float(os.getenv("BLOCK_DETECT_DARK_RATIO_THRESHOLD", "0.58")),
         mean_brightness_threshold=float(
             os.getenv("BLOCK_DETECT_MEAN_BRIGHTNESS_THRESHOLD", "50.0")

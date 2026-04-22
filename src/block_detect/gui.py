@@ -8,10 +8,18 @@ from pathlib import Path
 from queue import Empty, Queue
 import threading
 import traceback
-import tkinter as tk
-from tkinter import ttk
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ModuleNotFoundError:
+    tk = None
+    ttk = None
 
-from PIL import Image, ImageDraw, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageOps
+try:
+    from PIL import ImageTk
+except ModuleNotFoundError:
+    ImageTk = None
 
 from .classifier import ClassificationResult
 from .config import Settings, load_settings
@@ -50,36 +58,31 @@ def render_preview_image(
     image: Image.Image,
     size: tuple[int, int],
     show_roi_overlay: bool = False,
-    roi_line_offset_ratio: float = 0.12,
+    roi_left_y_ratio: float = 0.30,
+    roi_bottom_x_ratio: float = 0.40,
 ) -> Image.Image:
     preview = ImageOps.contain(image.convert("RGBA"), size)
     if not show_roi_overlay:
         return preview.convert("RGB")
 
     width, height = preview.size
-    offset_pixels = int(round(max(0.0, min(0.95, roi_line_offset_ratio)) * max(0, height - 1)))
+    left_y = int(round(max(0.0, min(1.0, roi_left_y_ratio)) * max(0, height - 1)))
+    bottom_x = int(round(max(0.0, min(1.0, roi_bottom_x_ratio)) * max(0, width - 1)))
     if height <= 1 or width <= 1:
-        offset_pixels = 0
-    bottom_intersection_x = width - 1
-    if height > 1:
-        bottom_intersection_x = int(
-            round(((height - 1 - offset_pixels) * (width - 1)) / (height - 1))
-        )
-        bottom_intersection_x = max(0, min(width - 1, bottom_intersection_x))
+        left_y = 0
+        bottom_x = 0
     overlay = Image.new("RGBA", preview.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     draw.polygon(
         [
-            (0, 0),
-            (width - 1, 0),
-            (width - 1, height - 1),
-            (bottom_intersection_x, height - 1),
-            (0, offset_pixels),
+            (0, left_y),
+            (bottom_x, height - 1),
+            (0, height - 1),
         ],
         fill=(255, 80, 80, 72),
     )
     draw.line(
-        (0, offset_pixels, bottom_intersection_x, height - 1),
+        (0, left_y, bottom_x, height - 1),
         fill=(255, 220, 0, 255),
         width=3,
     )
@@ -107,19 +110,23 @@ def apply_runtime_overrides(
     download_workers: int,
     classify_workers: int,
     score_threshold: float,
-    roi_line_offset_ratio: float,
+    roi_left_y_ratio: float,
+    roi_bottom_x_ratio: float,
 ) -> Settings:
     return replace(
         settings,
         download_workers=download_workers,
         classify_workers=classify_workers,
         score_threshold=score_threshold,
-        roi_line_offset_ratio=roi_line_offset_ratio,
+        roi_left_y_ratio=roi_left_y_ratio,
+        roi_bottom_x_ratio=roi_bottom_x_ratio,
     )
 
 
 class DetectionGui:
     def __init__(self, root: tk.Tk):
+        if tk is None or ttk is None or ImageTk is None:
+            raise RuntimeError("tkinter is required to run the GUI.")
         self.root = root
         self.root.title("Block Detect")
         self.root.geometry("1380x900")
@@ -133,7 +140,8 @@ class DetectionGui:
         self.selected_preview_ref: ImageTk.PhotoImage | None = None
         self.results_by_item_id: dict[str, ClassificationResult] = {}
         self.latest_results: list[ClassificationResult] = []
-        self.applied_roi_line_offset_ratio = self.settings.roi_line_offset_ratio
+        self.applied_roi_left_y_ratio = self.settings.roi_left_y_ratio
+        self.applied_roi_bottom_x_ratio = self.settings.roi_bottom_x_ratio
         self.gallery_after_id: str | None = None
         self.pending_blocked_results: list[ClassificationResult] = []
 
@@ -143,11 +151,11 @@ class DetectionGui:
         self.download_workers_var = tk.StringVar(value=str(self.settings.download_workers))
         self.classify_workers_var = tk.StringVar(value=str(self.settings.classify_workers))
         self.score_threshold_var = tk.DoubleVar(value=self.settings.score_threshold)
-        self.roi_line_offset_ratio_var = tk.DoubleVar(value=self.settings.roi_line_offset_ratio)
+        self.roi_left_y_ratio_var = tk.DoubleVar(value=self.settings.roi_left_y_ratio)
+        self.roi_bottom_x_ratio_var = tk.DoubleVar(value=self.settings.roi_bottom_x_ratio)
         self.score_threshold_label_var = tk.StringVar(value=f"{self.settings.score_threshold:.3f}")
-        self.roi_offset_label_var = tk.StringVar(
-            value=f"{self.settings.roi_line_offset_ratio:.3f}"
-        )
+        self.roi_left_y_label_var = tk.StringVar(value=f"{self.settings.roi_left_y_ratio:.3f}")
+        self.roi_bottom_x_label_var = tk.StringVar(value=f"{self.settings.roi_bottom_x_ratio:.3f}")
         self.status_var = tk.StringVar(value="Ready.")
         self.progress_label_var = tk.StringVar(value="Idle")
         self.remote_path_var = tk.StringVar(value="-")
@@ -166,7 +174,8 @@ class DetectionGui:
         self.start_time_var.trace_add("write", self._on_inputs_changed)
         self.end_time_var.trace_add("write", self._on_inputs_changed)
         self.score_threshold_var.trace_add("write", self._on_visual_threshold_changed)
-        self.roi_line_offset_ratio_var.trace_add("write", self._on_visual_threshold_changed)
+        self.roi_left_y_ratio_var.trace_add("write", self._on_visual_threshold_changed)
+        self.roi_bottom_x_ratio_var.trace_add("write", self._on_visual_threshold_changed)
         self.root.after(100, self._poll_result_queue)
         self._update_action_button_state()
 
@@ -176,11 +185,17 @@ class DetectionGui:
         except (tk.TclError, ValueError):
             return float(self.settings.score_threshold)
 
-    def _safe_roi_line_offset_ratio(self) -> float:
+    def _safe_roi_left_y_ratio(self) -> float:
         try:
-            return float(self.roi_line_offset_ratio_var.get())
+            return float(self.roi_left_y_ratio_var.get())
         except (tk.TclError, ValueError):
-            return float(self.applied_roi_line_offset_ratio)
+            return float(self.applied_roi_left_y_ratio)
+
+    def _safe_roi_bottom_x_ratio(self) -> float:
+        try:
+            return float(self.roi_bottom_x_ratio_var.get())
+        except (tk.TclError, ValueError):
+            return float(self.applied_roi_bottom_x_ratio)
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -229,15 +244,25 @@ class DetectionGui:
         ).grid(row=2, column=5, sticky="ew", pady=(10, 0))
         ttk.Entry(controls, textvariable=self.score_threshold_var, width=8).grid(row=2, column=6, sticky="w", pady=(10, 0))
 
-        ttk.Label(controls, text="ROI Offset").grid(row=2, column=7, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Label(controls, text="ROI Left Y").grid(row=2, column=7, sticky="w", padx=(16, 8), pady=(10, 0))
         ttk.Scale(
             controls,
             from_=0.0,
-            to=0.35,
-            variable=self.roi_line_offset_ratio_var,
+            to=1.0,
+            variable=self.roi_left_y_ratio_var,
             orient="horizontal",
         ).grid(row=2, column=8, sticky="ew", pady=(10, 0))
-        ttk.Entry(controls, textvariable=self.roi_line_offset_ratio_var, width=8).grid(row=2, column=9, sticky="w", pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.roi_left_y_ratio_var, width=8).grid(row=2, column=9, sticky="w", pady=(10, 0))
+
+        ttk.Label(controls, text="ROI Bottom X").grid(row=3, column=7, sticky="w", padx=(16, 8), pady=(10, 0))
+        ttk.Scale(
+            controls,
+            from_=0.0,
+            to=1.0,
+            variable=self.roi_bottom_x_ratio_var,
+            orient="horizontal",
+        ).grid(row=3, column=8, sticky="ew", pady=(10, 0))
+        ttk.Entry(controls, textvariable=self.roi_bottom_x_ratio_var, width=8).grid(row=3, column=9, sticky="w", pady=(10, 0))
 
         progress = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         progress.grid(row=1, column=0, sticky="ew")
@@ -378,7 +403,8 @@ class DetectionGui:
             download_workers = max(1, int(self.download_workers_var.get().strip()))
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
-            roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
+            roi_left_y_ratio = float(self.roi_left_y_ratio_var.get())
+            roi_bottom_x_ratio = float(self.roi_bottom_x_ratio_var.get())
         except (ValueError, tk.TclError) as exc:
             self.status_var.set(str(exc))
             return
@@ -401,7 +427,8 @@ class DetectionGui:
                 download_workers,
                 classify_workers,
                 score_threshold,
-                roi_line_offset_ratio,
+                roi_left_y_ratio,
+                roi_bottom_x_ratio,
             ),
             daemon=True,
         )
@@ -552,8 +579,12 @@ class DetectionGui:
     def _apply_saved_classification_settings(self, classification_settings: dict[str, float]) -> None:
         if "score_threshold" in classification_settings:
             self.score_threshold_var.set(float(classification_settings["score_threshold"]))
-        if "roi_line_offset_ratio" in classification_settings:
-            self.roi_line_offset_ratio_var.set(float(classification_settings["roi_line_offset_ratio"]))
+        if "roi_left_y_ratio" in classification_settings:
+            self.roi_left_y_ratio_var.set(float(classification_settings["roi_left_y_ratio"]))
+        elif "roi_line_offset_ratio" in classification_settings:
+            self.roi_left_y_ratio_var.set(float(classification_settings["roi_line_offset_ratio"]))
+        if "roi_bottom_x_ratio" in classification_settings:
+            self.roi_bottom_x_ratio_var.set(float(classification_settings["roi_bottom_x_ratio"]))
 
     def apply_threshold_to_local(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
@@ -567,7 +598,8 @@ class DetectionGui:
             time_range = self._selected_time_range()
             classify_workers = max(1, int(self.classify_workers_var.get().strip()))
             score_threshold = float(self.score_threshold_var.get())
-            roi_line_offset_ratio = float(self.roi_line_offset_ratio_var.get())
+            roi_left_y_ratio = float(self.roi_left_y_ratio_var.get())
+            roi_bottom_x_ratio = float(self.roi_bottom_x_ratio_var.get())
         except (ValueError, tk.TclError) as exc:
             self.status_var.set(str(exc))
             return
@@ -597,7 +629,8 @@ class DetectionGui:
                 time_range,
                 classify_workers,
                 score_threshold,
-                roi_line_offset_ratio,
+                roi_left_y_ratio,
+                roi_bottom_x_ratio,
             ),
             daemon=True,
         )
@@ -611,7 +644,8 @@ class DetectionGui:
         download_workers: int,
         classify_workers: int,
         score_threshold: float,
-        roi_line_offset_ratio: float,
+        roi_left_y_ratio: float,
+        roi_bottom_x_ratio: float,
     ) -> None:
         try:
             settings = apply_runtime_overrides(
@@ -619,7 +653,8 @@ class DetectionGui:
                 download_workers=download_workers,
                 classify_workers=classify_workers,
                 score_threshold=score_threshold,
-                roi_line_offset_ratio=roi_line_offset_ratio,
+                roi_left_y_ratio=roi_left_y_ratio,
+                roi_bottom_x_ratio=roi_bottom_x_ratio,
             )
             pipeline = build_pipeline(settings=settings)
             result = pipeline.run_day_with_details(
@@ -647,7 +682,8 @@ class DetectionGui:
         time_range: TimeRange | None,
         classify_workers: int,
         score_threshold: float,
-        roi_line_offset_ratio: float,
+        roi_left_y_ratio: float,
+        roi_bottom_x_ratio: float,
     ) -> None:
         try:
             settings = apply_runtime_overrides(
@@ -655,7 +691,8 @@ class DetectionGui:
                 download_workers=self.settings.download_workers,
                 classify_workers=classify_workers,
                 score_threshold=score_threshold,
-                roi_line_offset_ratio=roi_line_offset_ratio,
+                roi_left_y_ratio=roi_left_y_ratio,
+                roi_bottom_x_ratio=roi_bottom_x_ratio,
             )
             pipeline = build_pipeline(settings=settings)
             result = pipeline.run_local_day_with_details(
@@ -732,7 +769,8 @@ class DetectionGui:
         self.progress_bar.configure(maximum=max(1, summary.processed_count), value=max(1, summary.processed_count))
         self.progress_label_var.set(f"Completed {summary.processed_count}/{summary.processed_count}")
         self.latest_results = run_result.results
-        self.applied_roi_line_offset_ratio = self._safe_roi_line_offset_ratio()
+        self.applied_roi_left_y_ratio = self._safe_roi_left_y_ratio()
+        self.applied_roi_bottom_x_ratio = self._safe_roi_bottom_x_ratio()
 
         self._populate_results_tree(run_result.results)
         self._populate_blocked_gallery(blocked)
@@ -864,7 +902,8 @@ class DetectionGui:
                     image,
                     size,
                     show_roi_overlay=show_roi_overlay,
-                    roi_line_offset_ratio=self.applied_roi_line_offset_ratio,
+                    roi_left_y_ratio=self.applied_roi_left_y_ratio,
+                    roi_bottom_x_ratio=self.applied_roi_bottom_x_ratio,
                 )
             return ImageTk.PhotoImage(preview)
         except Exception:
@@ -1050,6 +1089,8 @@ class DetectionGui:
 
 
 def main() -> int:
+    if tk is None:
+        raise RuntimeError("tkinter is required to run the GUI.")
     root = tk.Tk()
     DetectionGui(root)
     try:
